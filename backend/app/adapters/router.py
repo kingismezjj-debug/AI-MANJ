@@ -94,7 +94,11 @@ class ModelRouter:
 
     def _invoke(self, category: str, fn, summary: str = ""):
         last: Exception | None = None
-        for route in route_chain(self.project, category, self.db):
+        routes = list(route_chain(self.project, category, self.db))
+        # Drop the read transaction before any network call. A long model
+        # request must not sit idle-in-transaction.
+        self.db.commit()
+        for route in routes:
             keys = split_keys(route.get("api_key") or "") or [""]
             slot_id = f"{self.project.id}:{category}:{route.get('provider')}"
             note = route.get("_note") or summary
@@ -111,9 +115,11 @@ class ModelRouter:
             except Exception as exc:
                 logger.warning("provider %s/%s failed: %s", category, route.get("provider"), exc)
                 self._record(category, route, Usage(), started, "failed", str(exc), note)
+                self.db.commit()
                 last = exc
                 continue
             self._record(category, route, result.usage, started, "succeeded", None, note)
+            self.db.commit()
             return result
         assert last is not None
         raise last

@@ -189,6 +189,9 @@ export default function BoardPage() {
           </button>
         </section>
       ) : null}
+      {board.episode_total && board.episode_total > board.episodes.length ? (
+        <p className="meta">共 {board.episode_total} 集，这里显示前 {board.episodes.length} 集。</p>
+      ) : null}
       {board.episodes.length === 0 ? <p className="meta">编剧还没交剧本。镜头会在剧本落下后陆续出现。</p> : null}
       {board.episodes.map((episode) => (
         <section className="episode" key={episode.id}>

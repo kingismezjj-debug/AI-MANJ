@@ -111,6 +111,7 @@ def store_note(db, project_id: str, text: str, payload: dict) -> None:
 def map_chapter(router, part: str, index: int, *, db=None, project_id: str | None = None, model: str | None = None) -> dict:
     if db is not None and project_id:
         cached = cached_note(db, project_id, part)
+        db.commit()
         if cached is not None:
             return cached
     payload = complete_json(

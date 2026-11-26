@@ -23,7 +23,23 @@ def make_engine(url: str):
             cursor.close()
 
         return engine
-    return create_engine(url, future=True, pool_pre_ping=True, pool_size=10, max_overflow=20)
+    engine = create_engine(
+        url,
+        future=True,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+        pool_timeout=30,
+        pool_recycle=300,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _pg_timeouts(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("SET idle_in_transaction_session_timeout = '60s'")
+        cursor.close()
+
+    return engine
 
 
 engine = make_engine(settings.database_url)
@@ -34,6 +50,10 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

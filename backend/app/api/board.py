@@ -24,14 +24,39 @@ def _url(artifact: Artifact | None) -> str | None:
     return f"/api/artifacts/{artifact.id}/content"
 
 
-def build_board(db, project: Project) -> dict:
-    episodes = db.query(Episode).filter(Episode.project_id == project.id).order_by(Episode.number).all()
-    scenes = db.query(Scene).filter(Scene.project_id == project.id).all()
-    shots = db.query(Shot).filter(Shot.project_id == project.id).order_by(Shot.number).all()
+def build_board(db, project: Project, *, offset: int = 0, limit: int = 80) -> dict:
+    from sqlalchemy import func
+
+    offset = max(0, int(offset))
+    limit = min(80, max(1, int(limit)))
+    episode_total = db.query(func.count(Episode.id)).filter(Episode.project_id == project.id).scalar() or 0
+    episodes = (
+        db.query(Episode)
+        .filter(Episode.project_id == project.id)
+        .order_by(Episode.number)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    episode_ids = [episode.id for episode in episodes]
+    scenes = db.query(Scene).filter(Scene.episode_id.in_(episode_ids)).all() if episode_ids else []
+    shots = (
+        db.query(Shot).filter(Shot.episode_id.in_(episode_ids)).order_by(Shot.number).all() if episode_ids else []
+    )
     characters = db.query(Character).filter(Character.project_id == project.id).all()
     locations = db.query(Location).filter(Location.project_id == project.id).all()
-    jobs = db.query(Job).filter(Job.project_id == project.id).order_by(Job.created_at).all()
-    artifacts = db.query(Artifact).filter(Artifact.project_id == project.id).all()
+    shot_ids = [shot.id for shot in shots]
+    jobs = (
+        db.query(Job).filter(Job.project_id == project.id, Job.entity_id.in_(shot_ids)).all() if shot_ids else []
+    )
+    entity_ids = shot_ids + [item.id for item in characters] + [item.id for item in locations] + [project.id]
+    artifacts = (
+        db.query(Artifact)
+        .filter(Artifact.project_id == project.id, Artifact.entity_id.in_(entity_ids))
+        .all()
+        if entity_ids
+        else []
+    )
     latest = _latest_map(artifacts)
     scene_by_id = {scene.id: scene for scene in scenes}
 
@@ -78,10 +103,19 @@ def build_board(db, project: Project) -> dict:
                 "shots": episode_shots,
             }
         )
-    counts: dict[str, int] = {}
-    for job in jobs:
-        counts[job.status] = counts.get(job.status, 0) + 1
-    running = next((job for job in reversed(jobs) if job.status == "running"), None)
+    counts = {
+        status: count
+        for status, count in db.query(Job.status, func.count(Job.id))
+        .filter(Job.project_id == project.id)
+        .group_by(Job.status)
+        .all()
+    }
+    running = (
+        db.query(Job)
+        .filter(Job.project_id == project.id, Job.status == "running")
+        .order_by(Job.updated_at.desc())
+        .first()
+    )
     activity = None
     if running is not None:
         activity = {
@@ -121,6 +155,8 @@ def build_board(db, project: Project) -> dict:
             "created_at": _iso(project.created_at),
         },
         "episodes": episode_payloads,
+        "episode_total": episode_total,
+        "episode_offset": offset,
         "characters": [
             {
                 "id": character.id,
@@ -161,7 +197,11 @@ def build_board(db, project: Project) -> dict:
                 "started_at": _iso(job.started_at),
                 "finished_at": _iso(job.finished_at),
             }
-            for job in sorted(jobs, key=lambda item: item.updated_at or item.created_at, reverse=True)[:16]
+            for job in db.query(Job)
+            .filter(Job.project_id == project.id)
+            .order_by(Job.updated_at.desc())
+            .limit(16)
+            .all()
         ],
         "costs": cost_report(db, project),
     }

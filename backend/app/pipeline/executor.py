@@ -19,6 +19,7 @@ def execute_job(job_id: str) -> str:
         job = db.get(Job, job_id)
         if job is None:
             logger.warning("run_job %s did no work: job missing", job_id)
+            db.rollback()
             return "missing"
         from app.config import get_settings
         from app.pipeline.reclaim import is_stale, mark_interrupted
@@ -32,6 +33,7 @@ def execute_job(job_id: str) -> str:
             return "interrupted"
         if job.status != "queued":
             logger.warning("run_job %s did no work: status=%s stage=%s", job_id, job.status, job.stage)
+            db.rollback()
             return f"skip:{job.status}"
         claimed = db.execute(
             update(Job)
@@ -42,6 +44,7 @@ def execute_job(job_id: str) -> str:
         if claimed.rowcount != 1:
             job = db.get(Job, job_id)
             logger.warning("run_job %s did no work: claim lost, status=%s", job_id, job.status if job else None)
+            db.rollback()
             return "claim-lost"
         job = db.get(Job, job_id)
         project = db.get(Project, job.project_id)

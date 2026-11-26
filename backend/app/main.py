@@ -22,6 +22,10 @@ async def auth_middleware(request, call_next):
     db = SessionLocal()
     try:
         user = resolve_user(db, request)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
     if user is None:

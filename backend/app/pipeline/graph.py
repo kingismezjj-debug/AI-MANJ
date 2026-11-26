@@ -261,6 +261,9 @@ def kick(project_id: str) -> None:
     try:
         release_ready(db, project_id)
         dispatch_queued(db, project_id)
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

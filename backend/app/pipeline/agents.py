@@ -76,21 +76,36 @@ def record(db, project_id: str, agent: str, content: str, *, kind: str = "note",
 
 
 def agent_board(db, project_id: str) -> dict:
-    jobs = db.query(Job).filter(Job.project_id == project_id).all()
+    from sqlalchemy import func
+
+    from app.db.models import Job
+
+    grouped: dict[str, dict[str, int]] = {}
+    for stage, status, count in (
+        db.query(Job.stage, Job.status, func.count(Job.id))
+        .filter(Job.project_id == project_id)
+        .group_by(Job.stage, Job.status)
+        .all()
+    ):
+        grouped.setdefault(stage, {})[status] = int(count)
     agents = []
     for agent, stages in AGENT_STAGES.items():
-        related = [job for job in jobs if job.stage in stages]
-        if any(job.status == "running" for job in related):
+        totals: dict[str, int] = {}
+        for stage in stages:
+            for status, count in grouped.get(stage, {}).items():
+                totals[status] = totals.get(status, 0) + count
+        total = sum(totals.values())
+        if totals.get("running"):
             status = "running"
-        elif any(job.status == "failed" for job in related):
+        elif totals.get("failed"):
             status = "failed"
-        elif related and all(job.status == "succeeded" for job in related):
+        elif total and totals.get("succeeded") == total:
             status = "succeeded"
-        elif any(job.status in {"queued", "awaiting_approval"} for job in related):
+        elif totals.get("queued") or totals.get("awaiting_approval"):
             status = "queued"
         else:
             status = "waiting"
-        agents.append({"id": agent, "label": AGENT_LABELS[agent], "status": status, "jobs": len(related)})
+        agents.append({"id": agent, "label": AGENT_LABELS[agent], "status": status, "jobs": total})
     messages = (
         db.query(AgentEvent).filter(AgentEvent.project_id == project_id).order_by(AgentEvent.created_at.asc()).all()
     )

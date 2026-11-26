@@ -26,6 +26,8 @@ A novel goes in, a vertical AI short comes out. The unit of work is the shot. As
 
 工人重启后，心跳超过 `STALL_SECONDS`（默认 180 秒）的任务会变成「已中断」。点「继续」会重跑这一步，不会再出现空转成功、项目却一直停在「制作中」。
 
+项目页、列表和进度按 SQL 计数，不把全部任务读进内存。API 启动时，集行数超过已保存计划的项目会收成该计划：试做那几集的剧本和章节笔记留下，其余空大纲和排队任务删掉。删掉的任务即使被重新投递，也不会重开全书补读。
+
 环境变量 `CHAPTER_CONCURRENCY`、`CHAPTER_CHARS`、`STALL_SECONDS` 可以改这三件事。
 
 小说不再在 1.2 万字处截断。有章节标题时按章切开，先做整本故事圣经（人物在不同阶段的外形、世界、时间线），再列分集大纲。默认计划 60 集、每集 6 个镜头，先写出前 2 集；后面的集停在大纲上。制作板的「故事圣经」里可以点「再写下一集」。下一集的编剧不依赖上一集的成片，所以可以一边渲染一边写。
@@ -74,6 +76,8 @@ Open **模型设置** in the nav. The brain slot is an OpenAI-compatible chat en
 **Agent 协作** on a project shows the director dispatching 编剧, 定妆, 分镜, 视频, 配音 and 质检, plus the live API call log.
 
 Host port 8010 via `docker-compose.override.yml` still works: the container listens on 8000 and the service name is `api`. Rebuild the web image with `NEXT_PUBLIC_API_URL=http://localhost:8010` if the browser should call that host port. Redis can stay unpublished.
+
+Project and list pages count jobs in SQL. On API startup, a project with more episode rows than its saved plan is collapsed: the trial scripts and chapter notes stay, and the extra outline jobs are deleted so a restarted worker cannot resume a full-book fill.
 
 ## Setup
 

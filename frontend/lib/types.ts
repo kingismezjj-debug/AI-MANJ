@@ -80,6 +80,7 @@ export interface Board {
     created_at: string | null;
   };
   episodes: EpisodeCard[];
+  episode_total?: number;
   characters: CharacterCard[];
   locations: { id: string; name: string; description: string; image_url: string | null; status: string }[];
   counts: Record<string, number>;

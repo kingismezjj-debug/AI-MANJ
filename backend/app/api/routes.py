@@ -161,13 +161,25 @@ def list_projects(request: Request, db: Session = Depends(get_db)):
     if user.role != "admin":
         query = query.filter(Project.user_id == user.id)
     projects = query.order_by(Project.created_at.desc()).all()
+    from sqlalchemy import func
+
+    from app.db.models import ModelCall
+
+    ids = [project.id for project in projects]
+    spent = {}
+    if ids:
+        spent = dict(
+            db.query(ModelCall.project_id, func.coalesce(func.sum(ModelCall.cost_usd), 0))
+            .filter(ModelCall.project_id.in_(ids), ModelCall.status == "succeeded")
+            .group_by(ModelCall.project_id)
+            .all()
+        )
+    from app.pipeline.progress import snapshot
+
     payload = []
     for project in projects:
-        report = cost_report(db, project)
-        from app.pipeline.progress import snapshot
-
         item = _project_out(project)
-        item["costs"] = {"actual_usd": report["actual_usd"], "reference_usd": report["reference_usd"]}
+        item["costs"] = {"actual_usd": round(float(spent.get(project.id) or 0), 6), "reference_usd": 0}
         item["progress"] = snapshot(db, project)
         payload.append(item)
     return payload
@@ -210,9 +222,15 @@ def create_project(body: ProjectCreate, request: Request, db: Session = Depends(
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str, request: Request, db: Session = Depends(get_db)):
+def get_project(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    offset: int = 0,
+    limit: int = 80,
+):
     project = _load(db, project_id, request)
-    return build_board(db, project)
+    return build_board(db, project, offset=offset, limit=limit)
 
 
 @router.get("/projects/{project_id}/costs")

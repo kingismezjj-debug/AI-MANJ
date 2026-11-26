@@ -102,8 +102,15 @@ def book(project_id: str, request: Request, db: Session = Depends(get_db)):
     project = _load(db, project_id, request)
     novel = db.query(Novel).filter(Novel.project_id == project.id).one_or_none()
     analysis = (novel.analysis if novel else None) or {}
+    from sqlalchemy import func
+
     episodes = db.query(Episode).filter(Episode.project_id == project.id).order_by(Episode.number).all()
-    shots = db.query(Shot).filter(Shot.project_id == project.id).all()
+    shot_counts = dict(
+        db.query(Shot.episode_id, func.count(Shot.id))
+        .filter(Shot.project_id == project.id)
+        .group_by(Shot.episode_id)
+        .all()
+    )
     return {
         "bible": analysis.get("bible") or {
             "characters": analysis.get("characters") or [],
@@ -122,7 +129,7 @@ def book(project_id: str, request: Request, db: Session = Depends(get_db)):
                 "title": episode.title,
                 "synopsis": episode.synopsis,
                 "status": episode.status,
-                "shots": len([shot for shot in shots if shot.episode_id == episode.id]),
+                "shots": int(shot_counts.get(episode.id) or 0),
             }
             for episode in episodes
         ],
@@ -187,6 +194,19 @@ def script_view(project_id: str, request: Request, db: Session = Depends(get_db)
     project = _load(db, project_id, request)
     episodes = db.query(Episode).filter(Episode.project_id == project.id).order_by(Episode.number).all()
     shots = db.query(Shot).filter(Shot.project_id == project.id).order_by(Shot.number).all()
+    by_episode: dict[str, list] = {}
+    for shot in shots:
+        by_episode.setdefault(shot.episode_id, []).append(
+            {
+                "id": shot.id,
+                "number": shot.number,
+                "description": shot.description,
+                "dialogue": shot.dialogue,
+                "speaker": shot.speaker,
+                "visual_prompt": shot.visual_prompt,
+                "stale": bool(shot.stale),
+            }
+        )
     return {
         "episodes": [
             {
@@ -194,19 +214,7 @@ def script_view(project_id: str, request: Request, db: Session = Depends(get_db)
                 "number": episode.number,
                 "title": episode.title,
                 "status": episode.status,
-                "shots": [
-                    {
-                        "id": shot.id,
-                        "number": shot.number,
-                        "description": shot.description,
-                        "dialogue": shot.dialogue,
-                        "speaker": shot.speaker,
-                        "visual_prompt": shot.visual_prompt,
-                        "stale": bool(shot.stale),
-                    }
-                    for shot in shots
-                    if shot.episode_id == episode.id
-                ],
+                "shots": by_episode.get(episode.id, []),
             }
             for episode in episodes
         ]
@@ -449,6 +457,28 @@ def admin_reap(request: Request, db: Session = Depends(get_db)):
     if user.role != "admin":
         raise HTTPException(403, "需要管理员")
     return {"jobs": reap(db)}
+
+
+@router.post("/admin/projects/{project_id}/compact")
+def admin_compact(project_id: str, request: Request, db: Session = Depends(get_db)):
+    """Collapse episode rows that outgrew the saved plan. Safe to call twice."""
+    from app.db.models import Project
+    from app.novel.chapters import resolved_plan
+    from app.pipeline.plan import compact_project, scoped_chapters, stop_background
+
+    user = _user(request, db)
+    if user.role != "admin":
+        raise HTTPException(403, "需要管理员")
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one_or_none()
+    chosen = scoped_chapters(novel, project.settings or {})
+    plan = resolved_plan(len(chosen) or int((project.settings or {}).get("episode_count") or 1), project.settings or {})
+    stop_background(db, project)
+    result = compact_project(db, project, chosen, plan)
+    db.commit()
+    return result
 
 
 def _asset_out(db, asset: Asset) -> dict:

@@ -30,7 +30,10 @@ def _reclaim_loop() -> None:
             found = reclaim_stale(db)
             if found:
                 logger.info("marked %s stale jobs interrupted", len(found))
+            else:
+                db.rollback()
         except Exception:
+            db.rollback()
             logger.exception("stale job reclaim failed")
         finally:
             db.close()
@@ -48,6 +51,7 @@ def _on_ready(**_kwargs):
     db = SessionLocal()
     try:
         reclaim_stale(db)
+        db.rollback()
     finally:
         db.close()
     threading.Thread(target=_reclaim_loop, name="reclaim-stale", daemon=True).start()

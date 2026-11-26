@@ -146,26 +146,38 @@ def progress_view(
 
 
 def snapshot(db, project) -> dict:
+    from sqlalchemy import func
+
     from app.config import get_settings
     from app.db.models import Job, ModelCall, Shot
     from app.util import utcnow
 
-    jobs = db.query(Job).filter(Job.project_id == project.id).all()
-    shots = db.query(Shot).filter(Shot.project_id == project.id).all()
+    grouped = {
+        (stage, status): count
+        for stage, status, count in db.query(Job.stage, Job.status, func.count(func.distinct(Job.entity_id)))
+        .filter(Job.project_id == project.id)
+        .group_by(Job.stage, Job.status)
+        .all()
+    }
+    storyboard_total = db.query(func.count(Shot.id)).filter(Shot.project_id == project.id).scalar() or 0
+    video_total = storyboard_total
+    cast_total = (
+        db.query(func.count(func.distinct(Job.entity_id)))
+        .filter(Job.project_id == project.id, Job.stage.in_(["character_bible", "location_bible"]))
+        .scalar()
+        or 0
+    )
     stored = ((project.settings or {}).get("progress") or None) if project.settings else None
     if stored is not None and not isinstance(stored, dict):
         stored = None
 
     def done(stage: str) -> int:
-        return len({job.entity_id for job in jobs if job.stage == stage and job.status == "succeeded"})
+        return int(grouped.get((stage, "succeeded"), 0))
 
-    storyboard_total = len(shots)
-    video_total = len(shots)
-    cast_total = len({job.entity_id for job in jobs if job.stage in {"character_bible", "location_bible"}})
-    ingest_done = any(job.stage == "ingest" and job.status == "succeeded" for job in jobs)
-    director_done = any(job.stage == "director" and job.status == "succeeded" for job in jobs)
-    script_done = any(job.stage == "screenwrite" and job.status == "succeeded" for job in jobs)
-    finish_done = project.status == "completed" or any(job.stage == "qc_final" and job.status == "succeeded" for job in jobs)
+    ingest_done = done("ingest") > 0
+    director_done = done("director") > 0
+    script_done = done("screenwrite") > 0
+    finish_done = project.status == "completed" or done("qc_final") > 0
     percent = overall_percent(
         status=project.status,
         stored=stored,
@@ -180,7 +192,12 @@ def snapshot(db, project) -> dict:
         video_total=video_total,
         finish_done=finish_done,
     )
-    running = next((job for job in jobs if job.status == "running"), None)
+    running = (
+        db.query(Job)
+        .filter(Job.project_id == project.id, Job.status == "running")
+        .order_by(Job.updated_at.desc())
+        .first()
+    )
     if project.status == "trial_done":
         label = "试做完成"
     elif project.status == "interrupted":
@@ -241,7 +258,7 @@ def snapshot(db, project) -> dict:
         now=utcnow(),
         last_call=last_call,
         stall_seconds=stall,
-        jobs_exist=bool(jobs),
+        jobs_exist=bool(grouped),
         label=label,
         percent=percent,
         eta=eta,

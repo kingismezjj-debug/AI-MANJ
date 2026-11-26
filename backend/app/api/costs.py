@@ -3,26 +3,35 @@ from app.db.models import Character, Location, ModelCall, Shot
 
 
 def cost_report(db, project) -> dict:
-    calls = (
-        db.query(ModelCall).filter(ModelCall.project_id == project.id).order_by(ModelCall.created_at.desc()).all()
+    from sqlalchemy import func
+
+    grouped = (
+        db.query(ModelCall.category, func.count(ModelCall.id), func.coalesce(func.sum(ModelCall.cost_usd), 0))
+        .filter(ModelCall.project_id == project.id, ModelCall.status == "succeeded")
+        .group_by(ModelCall.category)
+        .all()
     )
-    succeeded = [call for call in calls if call.status == "succeeded"]
-    actual = round(sum(call.cost_usd or 0 for call in succeeded), 6)
-    by_category: dict[str, dict] = {}
-    for call in succeeded:
-        bucket = by_category.setdefault(call.category, {"usd": 0.0, "calls": 0})
-        bucket["usd"] = round(bucket["usd"] + (call.cost_usd or 0), 6)
-        bucket["calls"] += 1
-    shots = db.query(Shot).filter(Shot.project_id == project.id).all()
+    actual = round(sum(float(usd or 0) for _category, _count, usd in grouped), 6)
+    by_category = {
+        category: {"usd": round(float(usd or 0), 6), "calls": int(count)} for category, count, usd in grouped
+    }
+    shot_count, dialogue_chars, video_seconds = db.query(
+        func.count(Shot.id),
+        func.coalesce(func.sum(func.length(Shot.dialogue)), 0),
+        func.coalesce(func.sum(Shot.duration_sec), 0),
+    ).filter(Shot.project_id == project.id).one()
     characters = db.query(Character).filter(Character.project_id == project.id).count()
     locations = db.query(Location).filter(Location.project_id == project.id).count()
-    if shots:
+    calls = (
+        db.query(ModelCall).filter(ModelCall.project_id == project.id).order_by(ModelCall.created_at.desc()).limit(40).all()
+    )
+    if shot_count:
         units = estimate_units(
             characters=characters,
             locations=locations,
-            shots=len(shots),
-            dialogue_chars=sum(len(shot.dialogue or "") for shot in shots),
-            video_seconds=sum(shot.duration_sec or 0 for shot in shots),
+            shots=int(shot_count),
+            dialogue_chars=int(dialogue_chars or 0),
+            video_seconds=float(video_seconds or 0),
         )
         preliminary = False
     else:

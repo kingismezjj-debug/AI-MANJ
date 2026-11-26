@@ -26,7 +26,20 @@ def init_database() -> None:
     wait_for_db()
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
+    _ensure_indexes()
     _ensure_users()
+
+
+def _ensure_indexes() -> None:
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_jobs_project_status ON jobs (project_id, status)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_project_updated ON jobs (project_id, updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_artifacts_project_entity ON artifacts (project_id, entity_id)",
+        "CREATE INDEX IF NOT EXISTS ix_shots_project_episode ON shots (project_id, episode_id)",
+    )
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
 
 
 def _ensure_columns() -> None:
@@ -87,6 +100,9 @@ def _ensure_users() -> None:
         from app.settings_store import ensure_defaults
 
         ensure_defaults(db)
+        from app.pipeline.plan import compact_overgrown
+
+        compact_overgrown(db)
     finally:
         db.close()
 
