@@ -153,8 +153,8 @@ def start_run(db, project: Project) -> None:
         db.commit()
         kick(project.id)
         return
-    if project.status == "failed":
-        failed = db.query(Job).filter(Job.project_id == project.id, Job.status == "failed").all()
+    if project.status in {"failed", "interrupted"}:
+        failed = db.query(Job).filter(Job.project_id == project.id, Job.status.in_(["failed", "interrupted"])).all()
         succeeded = {
             item.id for item in db.query(Job).filter(Job.project_id == project.id, Job.status == "succeeded").all()
         }

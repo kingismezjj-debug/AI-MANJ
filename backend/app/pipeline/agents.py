@@ -9,6 +9,7 @@ from app.pipeline.events import publish
 
 AGENT_FOR_STAGE = {
     "ingest": "director",
+    "bible_refine": "director",
     "director": "director",
     "screenwrite": "screenwriter",
     "episode_script": "screenwriter",

@@ -179,7 +179,7 @@ def analysis_from_novel(text: str) -> dict:
 class MockLLM:
     provider = "mock"
 
-    def complete(self, *, messages, model, temperature, json_mode) -> LLMResult:
+    def complete(self, *, messages, model, temperature, json_mode, max_tokens: int | None = None) -> LLMResult:
         blob = "\n".join(message.get("content", "") for message in messages)
         novel = _novel_from_prompt(blob)
         if "TASK:BIBLE_MAP" in blob:

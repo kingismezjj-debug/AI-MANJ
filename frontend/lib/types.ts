@@ -148,6 +148,7 @@ export function statusLabel(status: string): string {
     scripted: "已写剧本",
     stale: "待更新",
     awaiting_grid: "待确认分镜格",
+    interrupted: "已中断",
   };
   return map[status] || status;
 }

@@ -37,6 +37,8 @@ export default function SettingsPage() {
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [paramsText, setParamsText] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
+  const [concurrency, setConcurrency] = useState("12");
+  const [fastModel, setFastModel] = useState("");
   const [results, setResults] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
@@ -47,6 +49,10 @@ export default function SettingsPage() {
       text[slot.category] = JSON.stringify(slot.params || {}, null, 0);
     });
     setParamsText(text);
+    const brain = next.find((slot) => slot.category === "llm");
+    const params = brain?.params || {};
+    if (params.chapter_concurrency) setConcurrency(String(params.chapter_concurrency));
+    if (typeof params.fast_model === "string") setFastModel(params.fast_model);
   }
 
   useEffect(() => {
@@ -61,11 +67,14 @@ export default function SettingsPage() {
 
   async function save(group: Slot[]) {
     setError("");
-    const payload = group.map((slot) => ({
-      ...slot,
-      api_key: keys[slot.category] || "",
-      params: JSON.parse(paramsText[slot.category] || "{}"),
-    }));
+    const payload = group.map((slot) => {
+      const params = JSON.parse(paramsText[slot.category] || "{}");
+      if (slot.category === "llm") {
+        params.chapter_concurrency = Math.max(1, Math.min(16, Number(concurrency) || 12));
+        params.fast_model = fastModel.trim();
+      }
+      return { ...slot, api_key: keys[slot.category] || "", params };
+    });
     const saved = await apiPut<{ slots: Slot[] }>("/api/settings/slots", { slots: payload });
     apply(saved.slots);
     setKeys({});
@@ -97,6 +106,14 @@ export default function SettingsPage() {
       <h2>模型设置</h2>
       <p className="lead">三条主接口：总控和编剧共用大脑，文生图出定妆和分镜，视频出镜头。密钥只存在服务器上，页面只显示掩码。一个槽可以填多把密钥，一行一把，遇到 429 或 5xx 会换下一把。选「本地模拟」可以不填密钥跑完整条流水线。</p>
       <RelayBox onDone={(text) => { setMessage(text); apiGet<{ slots: Slot[] }>("/api/settings/slots").then((body) => apply(body.slots)).catch((err: Error) => setError(err.message)); }} />
+      <section className="panel" style={{ marginBottom: 14 }}>
+        <h3>章节分析速度</h3>
+        <p className="meta">分析章节默认用快速模型，编剧仍用上面的大脑模型。留空时，如果大脑选了 reasoner，分析会改用 deepseek-chat。</p>
+        <label>同时请求数（1–16，建议 12）</label>
+        <input value={concurrency} onChange={(event) => setConcurrency(event.target.value)} />
+        <label>分析用快速模型</label>
+        <input value={fastModel} placeholder="deepseek-chat" onChange={(event) => setFastModel(event.target.value)} />
+      </section>
       {primary.map((slot) => (
         <SlotCard key={slot.category} slot={slot} hint={HINTS[slot.category]} secret={keys[slot.category] || ""} params={paramsText[slot.category] || "{}"} result={results[slot.category] || ""} onChange={update} onSecret={(value) => setKeys({ ...keys, [slot.category]: value })} onParams={(value) => setParamsText({ ...paramsText, [slot.category]: value })} onTest={() => void test(slot).catch((err: Error) => setError(err.message))} />
       ))}

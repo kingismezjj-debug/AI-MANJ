@@ -44,6 +44,7 @@ def _ensure_columns() -> None:
             "quality": "VARCHAR(16) DEFAULT 'final'",
         },
         "model_calls": {"request_summary": "TEXT DEFAULT ''"},
+        "jobs": {"heartbeat_at": "TIMESTAMP WITH TIME ZONE"},
     }
     inspector = inspect(engine)
     existing = set(inspector.get_table_names())

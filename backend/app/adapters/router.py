@@ -22,14 +22,18 @@ class ModelRouter:
         self.project = project
         self.job_id = job_id
 
-    def llm(self, messages, *, json_mode: bool = False, temperature: float = 0.7):
+    def llm(self, messages, *, json_mode: bool = False, temperature: float = 0.7, model: str | None = None, max_tokens: int | None = None):
         def call(adapter, route):
-            return adapter.complete(
-                messages=messages,
-                model=route.get("model") or None,
-                temperature=temperature,
-                json_mode=json_mode,
-            )
+            chosen = model or route.get("model") or None
+            kwargs = {
+                "messages": messages,
+                "model": chosen,
+                "temperature": temperature,
+                "json_mode": json_mode,
+            }
+            if max_tokens and "max_tokens" in adapter.complete.__code__.co_varnames:
+                kwargs["max_tokens"] = max_tokens
+            return adapter.complete(**kwargs)
 
         return self._invoke("llm", call, summary="编剧/总控")
 

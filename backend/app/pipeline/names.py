@@ -1,4 +1,5 @@
 INGEST = "ingest"
+BIBLE_REFINE = "bible_refine"
 DIRECTOR = "director"
 SCREENWRITE = "screenwrite"
 EPISODE_SCRIPT = "episode_script"

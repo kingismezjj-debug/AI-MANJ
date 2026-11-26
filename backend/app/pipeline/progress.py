@@ -19,20 +19,26 @@ WEIGHTS = (
 )
 
 
-def bump(db, project, *, stage: str, label: str, done: int, total: int) -> None:
+def bump(db, project, *, stage: str, label: str, done: int, total: int, job=None) -> None:
     from app.pipeline.events import publish
     from app.util import utcnow
 
+    now = utcnow()
     settings = dict(project.settings or {})
+    previous = dict(settings.get("progress") or {})
+    started = previous.get("started_at") if previous.get("stage") == stage else now.isoformat()
     settings["progress"] = {
         "stage": stage,
         "label": label,
         "done": int(done),
         "total": max(1, int(total)),
-        "updated_at": utcnow().isoformat(),
+        "started_at": started,
+        "updated_at": now.isoformat(),
     }
     project.settings = settings
     project.phase = stage[:48]
+    if job is not None:
+        job.heartbeat_at = now
     db.commit()
     publish(project.id, {"type": "progress", "label": label, "done": done, "total": total})
 
@@ -118,7 +124,10 @@ def progress_view(
     seconds_ago = int((now - latest).total_seconds()) if latest is not None else None
     stalled = bool(status == "running" and seconds_ago is not None and seconds_ago >= stall_seconds)
     state = "failed" if status == "failed" else ("stalled" if stalled else status)
-    if status == "failed":
+    if status == "interrupted":
+        label = "已中断"
+        state = "interrupted"
+    elif status == "failed":
         label = "出错"
     elif stalled:
         label = f"疑似卡住 · {label}"
@@ -172,7 +181,9 @@ def snapshot(db, project) -> dict:
         finish_done=finish_done,
     )
     running = next((job for job in jobs if job.status == "running"), None)
-    if project.status == "failed":
+    if project.status == "interrupted":
+        label = "已中断"
+    elif project.status == "failed":
         label = "出错"
     elif stored and stored.get("stage") == "map" and not ingest_done:
         label = stored.get("label") or "分析章节"

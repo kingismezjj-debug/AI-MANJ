@@ -54,19 +54,81 @@ def reduce_bible(router, notes: list[dict]) -> dict:
     return extract_json(result.text)
 
 
-def map_chapter(router, part: str, index: int) -> dict:
+MAP_PROMPT_VERSION = "map-v3"
+MAP_MAX_TOKENS = 400
+
+
+def analysis_model(slot: dict | None) -> str | None:
+    """Chapter notes stay on a fast chat model. The reasoner is for the script."""
+    slot = slot or {}
+    if slot.get("provider") != "openai_compatible":
+        return None
+    params = slot.get("params") or {}
+    fast = (params.get("fast_model") or "").strip()
+    if fast:
+        return fast
+    main = (slot.get("model") or "").lower()
+    if "reasoner" in main or main.endswith("-r1"):
+        return "deepseek-chat"
+    return None
+
+
+def chunk_key(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:40]
+
+
+def cached_note(db, project_id: str, text: str) -> dict | None:
+    from app.db.models import ChapterCache
+
+    row = (
+        db.query(ChapterCache)
+        .filter(
+            ChapterCache.project_id == project_id,
+            ChapterCache.chunk_hash == chunk_key(text),
+            ChapterCache.prompt_version == MAP_PROMPT_VERSION,
+        )
+        .one_or_none()
+    )
+    return dict(row.payload) if row is not None else None
+
+
+def store_note(db, project_id: str, text: str, payload: dict) -> None:
+    from app.db.models import ChapterCache
+
+    db.add(
+        ChapterCache(
+            project_id=project_id,
+            chunk_hash=chunk_key(text),
+            prompt_version=MAP_PROMPT_VERSION,
+            payload=payload,
+        )
+    )
+
+
+def map_chapter(router, part: str, index: int, *, db=None, project_id: str | None = None, model: str | None = None) -> dict:
+    if db is not None and project_id:
+        cached = cached_note(db, project_id, part)
+        if cached is not None:
+            return cached
     result = router.llm(
         [
             {
                 "role": "system",
-                "content": "TASK:BIBLE_MAP\n阅读这一段，记下人物、外形、地点、时间线。只输出 JSON。",
+                "content": "TASK:BIBLE_MAP\n用很短的 JSON 记下人物、地点、时间。notes 不超过 80 字。只输出 JSON。",
             },
             {"role": "user", "content": f"PART={index}\n<<<NOVEL\n{part}\n>>>"},
         ],
         json_mode=True,
         temperature=0.2,
+        model=model,
+        max_tokens=MAP_MAX_TOKENS,
     )
-    return extract_json(result.text)
+    payload = extract_json(result.text)
+    if db is not None and project_id:
+        store_note(db, project_id, part, payload)
+    return payload
 
 
 def build_outline(router, bible: dict, chapters: list[str], episode_count: int, shots_per: int) -> list[dict]:

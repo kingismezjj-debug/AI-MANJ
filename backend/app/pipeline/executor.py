@@ -13,17 +13,36 @@ from app.util import utcnow
 logger = logging.getLogger(__name__)
 
 
-def execute_job(job_id: str) -> None:
+def execute_job(job_id: str) -> str:
     db = SessionLocal()
     try:
+        job = db.get(Job, job_id)
+        if job is None:
+            logger.warning("run_job %s did no work: job missing", job_id)
+            return "missing"
+        from app.config import get_settings
+        from app.pipeline.reclaim import is_stale, mark_interrupted
+
+        stall = int(get_settings().stall_seconds or 180)
+        if job.status == "running" and is_stale(job, stall):
+            logger.warning("run_job %s did no work as a live task: stale running %s, marking interrupted", job_id, job.stage)
+            mark_interrupted(db, job)
+            db.commit()
+            publish(job.project_id, {"type": "interrupted", "job_id": job.id, "stage": job.stage})
+            return "interrupted"
+        if job.status != "queued":
+            logger.warning("run_job %s did no work: status=%s stage=%s", job_id, job.status, job.stage)
+            return f"skip:{job.status}"
         claimed = db.execute(
             update(Job)
             .where(Job.id == job_id, Job.status == "queued")
-            .values(status="running", started_at=utcnow())
+            .values(status="running", started_at=utcnow(), heartbeat_at=utcnow())
         )
         db.commit()
         if claimed.rowcount != 1:
-            return
+            job = db.get(Job, job_id)
+            logger.warning("run_job %s did no work: claim lost, status=%s", job_id, job.status if job else None)
+            return "claim-lost"
         job = db.get(Job, job_id)
         project = db.get(Project, job.project_id)
         try:
@@ -43,12 +62,12 @@ def execute_job(job_id: str) -> None:
                     project.phase = "character_lock"
             db.commit()
             publish(job.project_id, {"type": project.status if project else "awaiting_approval", "job_id": job.id})
-            return
+            return "held"
         except UpstreamPending as exc:
             note_pending(job, exc.task_id, exc.held_usd)
             db.commit()
             publish(job.project_id, {"type": "observing", "job_id": job.id})
-            return
+            return "observing"
         except QCRetry as exc:
             job.status = "failed"
             job.error = str(exc)[:1000]
@@ -56,7 +75,7 @@ def execute_job(job_id: str) -> None:
             db.commit()
             publish(job.project_id, {"type": "qc_retry", "job_id": job.id, "shot_id": job.entity_id})
             kick(job.project_id)
-            return
+            return "qc-retry"
         except Exception as exc:
             logger.exception("job %s failed", job_id)
             db.rollback()
@@ -64,7 +83,7 @@ def execute_job(job_id: str) -> None:
             project = db.get(Project, job.project_id) if job is not None else None
             if job is not None:
                 _fail_or_retry(db, job, project, exc)
-            return
+            return "failed"
         job.status = "succeeded"
         job.result = result or {}
         job.finished_at = utcnow()
@@ -75,6 +94,7 @@ def execute_job(job_id: str) -> None:
             {"type": "job_succeeded", "job_id": job.id, "stage": job.stage, "entity_id": job.entity_id},
         )
         kick(job.project_id)
+        return "ran"
     finally:
         db.close()
 

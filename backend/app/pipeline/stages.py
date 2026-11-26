@@ -27,6 +27,7 @@ from app.pipeline.names import (
     ASSEMBLE_FINAL,
     CHARACTER_BIBLE,
     CHARACTER_LOCK,
+    BIBLE_REFINE,
     DIRECTOR,
     EPISODE_SCRIPT,
     INGEST,
@@ -110,21 +111,33 @@ def _chapter_workers(project: Project) -> int:
     configured = int((project.settings or {}).get("chapter_concurrency") or settings.chapter_concurrency or 6)
     if (settings.database_url or "").startswith("sqlite"):
         return 1
-    return max(1, min(configured, 12))
+    return max(1, min(configured, 16))
 
 
-def _map_notes(db: Session, job: Job, project: Project, segments: list[tuple[int, str]]) -> list[dict]:
+def _pace(prefix: str, done: int, total: int, started) -> str:
+    from app.util import utcnow
+
+    minutes = max((utcnow() - started).total_seconds() / 60, 1 / 60)
+    rate = done / minutes
+    return f"{prefix}分析章节 {done}/{total} · {rate:.0f} 次/分钟"
+
+
+def _map_notes(db: Session, job: Job, project: Project, segments: list[tuple[int, str]], *, prefix: str = "") -> list[dict]:
     """Map every segment. Postgres runs several calls at once; SQLite stays serial."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from app.db.session import SessionLocal
-    from app.pipeline.longform import map_chapter
+    from app.pipeline.longform import analysis_model, map_chapter
     from app.pipeline.progress import bump
+    from app.settings_store import configured_slot
+    from app.util import utcnow
 
     total = len(segments)
     notes: list[dict | None] = [None] * total
     workers = 1 if total == 1 else _chapter_workers(project)
-    bump(db, project, stage="map", label=f"分析章节 0/{total}", done=0, total=total)
+    started = utcnow()
+    fast_model = analysis_model(configured_slot(db, project, "llm"))
+    bump(db, project, stage="map", label=_pace(prefix, 0, total, started), done=0, total=total, job=job)
     project_id = project.id
     job_id = job.id
 
@@ -132,7 +145,14 @@ def _map_notes(db: Session, job: Job, project: Project, segments: list[tuple[int
         session = SessionLocal()
         try:
             current = session.get(Project, project_id)
-            note = map_chapter(ModelRouter(session, current, job_id), part, index)
+            note = map_chapter(
+                ModelRouter(session, current, job_id),
+                part,
+                index,
+                db=session,
+                project_id=project_id,
+                model=fast_model,
+            )
             session.commit()
             return index, note
         finally:
@@ -142,12 +162,13 @@ def _map_notes(db: Session, job: Job, project: Project, segments: list[tuple[int
     if workers == 1:
         fresh = db.get(Project, project_id)
         for index, (_chapter, part) in enumerate(segments):
-            bump(db, fresh, stage="map", label=f"分析章节 {done}/{total}", done=done, total=total)
+            bump(db, fresh, stage="map", label=_pace(prefix, done, total, started), done=done, total=total, job=job)
             _index, note = one(index, part)
             notes[_index] = note
             done += 1
             fresh = db.get(Project, project_id)
-            bump(db, fresh, stage="map", label=f"分析章节 {done}/{total}", done=done, total=total)
+            job.heartbeat_at = utcnow()
+            bump(db, fresh, stage="map", label=_pace(prefix, done, total, started), done=done, total=total, job=job)
             _maybe_release_early(db, fresh, job, segments, notes)
         return [note or {} for note in notes]
 
@@ -158,7 +179,8 @@ def _map_notes(db: Session, job: Job, project: Project, segments: list[tuple[int
             notes[index] = note
             done += 1
             fresh = db.get(Project, project_id)
-            bump(db, fresh, stage="map", label=f"分析章节 {done}/{total}", done=done, total=total)
+            job.heartbeat_at = utcnow()
+            bump(db, fresh, stage="map", label=_pace(prefix, done, total, started), done=done, total=total, job=job)
             _maybe_release_early(db, fresh, job, segments, notes)
     return [note or {} for note in notes]
 
@@ -263,17 +285,54 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
         novel.analysis = payload
         bump(db, project, stage="reduce", label="生成故事圣经", done=1, total=1)
     else:
+        from app.novel.chapters import skim_chapters
+        from app.pipeline.graph import create_job
         from app.pipeline.longform import bible_from_analysis, reduce_bible
+        from app.pipeline.names import BIBLE_REFINE
 
-        notes = _map_notes(db, job, project, segments)
-        project = db.get(Project, project.id)
-        novel = db.query(Novel).filter(Novel.project_id == project.id).one()
-        bump(db, project, stage="reduce", label="生成故事圣经", done=len(segments), total=len(segments))
-        project = db.get(Project, project.id)
-        novel.analysis = reduce_bible(_router(db, project, job), notes)
-        novel.analysis.setdefault("bible", bible_from_analysis(novel.analysis))
-        novel.analysis.setdefault("title", project.title)
-        novel.analysis.setdefault("summary", (novel.analysis.get("bible") or {}).get("world") or "")
+        chapters = split_chapters(novel.text)
+        first = max(1, int((project.settings or {}).get("produce_first") or 2))
+        fast = (project.settings or {}).get("fast_start", True) and len(chapters) > first
+        if fast:
+            skim = skim_chapters(chapters)
+            novel.analysis = {
+                "title": project.title,
+                "summary": skim[0]["head"][:120] if skim else "",
+                "mode": "fast",
+                "skim": skim,
+                "bible": {
+                    "characters": [],
+                    "world": "连载",
+                    "timeline": [item["title"] for item in skim[:12]],
+                    "phases": [],
+                },
+            }
+            db.flush()
+            head = [segment for segment in segments if segment[0] < first]
+            notes = _map_notes(db, job, project, head, prefix="快速开拍 · ")
+            project = db.get(Project, project.id)
+            _maybe_release_early(db, project, job, head, notes)
+            refine = create_job(
+                db,
+                project_id=project.id,
+                stage=BIBLE_REFINE,
+                entity_type="project",
+                entity_id=project.id,
+                depends_on=[job.id],
+                key=f"bible_refine:{project.id}",
+            )
+            if refine.status == "blocked":
+                refine.depends_on = [job.id]
+        else:
+            notes = _map_notes(db, job, project, segments)
+            project = db.get(Project, project.id)
+            novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+            bump(db, project, stage="reduce", label="生成故事圣经", done=len(segments), total=len(segments), job=job)
+            project = db.get(Project, project.id)
+            novel.analysis = reduce_bible(_router(db, project, job), notes)
+            novel.analysis.setdefault("bible", bible_from_analysis(novel.analysis))
+            novel.analysis.setdefault("title", project.title)
+            novel.analysis.setdefault("summary", (novel.analysis.get("bible") or {}).get("world") or "")
     from app.pipeline.graph import ensure_director_job
 
     project = db.get(Project, project.id)
@@ -392,6 +451,31 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
     for shot in db.query(Shot).filter(Shot.project_id == project.id).all():
         apply_shot_prompt(db, shot)
     return {"episodes": len(screenplay.episodes), "shots": shot_count, "title": screenplay.title}
+
+
+def run_bible_refine(db: Session, job: Job, project: Project) -> dict:
+    """Finish the chapters the fast open did not read. Does not touch episodes already shooting."""
+    from app.pipeline.longform import bible_from_analysis, reduce_bible
+    from app.pipeline.progress import bump
+
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    size = int((project.settings or {}).get("chapter_chars") or 24000)
+    segments = llm_segments(novel.text, size=size)
+    first = max(1, int((project.settings or {}).get("produce_first") or 2))
+    tail = [segment for segment in segments if segment[0] >= first] or segments
+    notes = _map_notes(db, job, project, tail, prefix="后台补全 · ")
+    project = db.get(Project, project.id)
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    bump(db, project, stage="reduce", label="后台生成全书圣经", done=len(tail), total=len(tail), job=job)
+    project = db.get(Project, project.id)
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    reduced = reduce_bible(_router(db, project, job), notes)
+    merged = dict(novel.analysis or {})
+    merged.update({key: value for key, value in reduced.items() if key != "bible"})
+    merged["bible"] = reduced.get("bible") or bible_from_analysis(reduced)
+    merged["mode"] = "full"
+    novel.analysis = merged
+    return {"chapters": len(tail)}
 
 
 def run_director(db: Session, job: Job, project: Project) -> dict:
@@ -1121,6 +1205,7 @@ def run_qc_final(db: Session, job: Job, project: Project) -> dict:
 
 HANDLERS = {
     INGEST: run_ingest,
+    BIBLE_REFINE: run_bible_refine,
     DIRECTOR: run_director,
     SCREENWRITE: run_screenwrite,
     EPISODE_SCRIPT: run_episode_script,

@@ -33,11 +33,13 @@ class OpenAICompatibleLLM:
         if route.get("model"):
             self.default_model = route["model"]
 
-    def complete(self, *, messages, model, temperature, json_mode) -> LLMResult:
+    def complete(self, *, messages, model, temperature, json_mode, max_tokens: int | None = None) -> LLMResult:
         if not self.api_key:
             raise ProviderNotConfigured("LLM API key is empty")
         chosen = model or self.default_model
         body = {"model": chosen, "messages": messages, "temperature": temperature}
+        if max_tokens:
+            body["max_tokens"] = int(max_tokens)
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         try:

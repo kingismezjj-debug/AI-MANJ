@@ -31,6 +31,22 @@ def split_chapters(text: str) -> list[str]:
     return parts or [body]
 
 
+def skim_chapters(chapters: list[str]) -> list[dict]:
+    """Cheap whole-book pass: title plus the opening and closing lines. No model call."""
+    skim = []
+    for index, chapter in enumerate(chapters):
+        lines = [line.strip() for line in chapter.splitlines() if line.strip()]
+        skim.append(
+            {
+                "chapter": index,
+                "title": (lines[0] if lines else f"第{index + 1}章")[:40],
+                "head": "\n".join(lines[:3])[:280],
+                "tail": "\n".join(lines[-2:])[:180],
+            }
+        )
+    return skim
+
+
 def llm_segments(text: str, size: int = 24000) -> list[tuple[int, str]]:
     """Chapter index plus text. A chapter that fits in one context window is
     one call. Longer chapters are cut into large windows, not 6k slices."""
