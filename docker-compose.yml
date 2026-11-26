@@ -80,6 +80,10 @@ services:
       ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-21m00Tcm4TlvDq8ikWAM}
       VIDEO_HTTP_API_KEY: ${VIDEO_HTTP_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-zc-dev-admin}
+      DEV_USER_API_KEY: ${DEV_USER_API_KEY:-zc-dev-user}
+      DEV_USER_CREDITS: ${DEV_USER_CREDITS:-100}
+      CREDIT_MARKUP: ${CREDIT_MARKUP:-1.2}
     ports:
       - "8000:8000"
     depends_on:

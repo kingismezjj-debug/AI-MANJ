@@ -1,4 +1,4 @@
-from app.adapters.pricing import REFERENCE_STACK, estimate_units, estimate_usd
+from app.adapters.pricing import REFERENCE_STACK, estimate_lines, estimate_units, estimate_usd, providers_of
 from app.db.models import Character, Location, ModelCall, Shot
 
 
@@ -28,13 +28,15 @@ def cost_report(db, project) -> dict:
     else:
         units = estimate_units(characters=3, locations=1, shots=6, dialogue_chars=80, video_seconds=18)
         preliminary = True
-    selected = {}
-    for category in ("llm", "image", "video", "tts", "lipsync", "music"):
-        selected[category] = ((project.provider_config or {}).get(category) or {}).get("provider") or "mock"
+    selected = providers_of(project.provider_config)
+    lines = estimate_lines(selected, units)
+    quote = (project.settings or {}).get("cost_quote")
     return {
         "actual_usd": actual,
         "estimated_usd": estimate_usd(selected, units),
         "reference_usd": estimate_usd(REFERENCE_STACK, units),
+        "lines": lines,
+        "quote": quote,
         "preliminary": preliminary,
         "by_category": by_category,
         "selected_providers": selected,

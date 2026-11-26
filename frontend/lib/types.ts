@@ -32,6 +32,7 @@ export interface CharacterCard {
   description: string;
   appearance: string;
   voice_hint: string;
+  anchors?: { face?: string; hair?: string; outfit?: string; palette?: string };
   seed: number;
   status: string;
   locked: boolean;
@@ -57,6 +58,8 @@ export interface Costs {
   by_category: Record<string, { usd: number; calls: number }>;
   calls: CostCall[];
   note: string;
+  lines?: { stage: string; provider: string; detail: string; usd: number }[];
+  quote?: { total_usd: number; reference_usd: number; assumption?: string } | null;
 }
 
 export interface Board {
@@ -112,6 +115,7 @@ export function statusLabel(status: string): string {
   const map: Record<string, string> = {
     draft: "草稿",
     running: "制作中",
+    awaiting_script: "待审剧本",
     awaiting_approval: "待定妆",
     completed: "已成片",
     failed: "失败",

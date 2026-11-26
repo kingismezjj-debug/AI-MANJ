@@ -57,6 +57,10 @@ class Settings(BaseSettings):
 
     sample_novel_path: str = ""
     cors_origins: str = "*"
+    admin_api_key: str = "zc-dev-admin"
+    dev_user_api_key: str = "zc-dev-user"
+    dev_user_credits: float = 100
+    credit_markup: float = 1.2
 
     def sample_path(self) -> Path:
         if self.sample_novel_path:

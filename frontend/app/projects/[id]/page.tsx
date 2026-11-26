@@ -2,8 +2,40 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { API_BASE, apiGet, apiPost, mediaUrl } from "@/lib/api";
+import { API_BASE, apiGet, apiPost, getKey, mediaUrl } from "@/lib/api";
 import { SHOT_STAGES, money, statusLabel, type Board } from "@/lib/types";
+
+function ShotRegen({ shotId, onDone }: { shotId: string; onDone: () => void }) {
+  const [stage, setStage] = useState("shot");
+  const [prompt, setPrompt] = useState("");
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button className="btn secondary regen" type="button" onClick={() => setOpen(true)}>
+        重做
+      </button>
+    );
+  }
+  return (
+    <form
+      className="regen"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void apiPost(`/api/shots/${shotId}/regenerate`, { stage, prompt: prompt || null }).then(onDone);
+      }}
+    >
+      <select value={stage} onChange={(event) => setStage(event.target.value)} aria-label="重做工序">
+        <option value="shot">整镜</option>
+        <option value="storyboard">分镜</option>
+        <option value="video">视频</option>
+        <option value="voice">配音</option>
+        <option value="lipsync">口型</option>
+      </select>
+      <textarea value={prompt} placeholder="可选：改画面或对白" onChange={(event) => setPrompt(event.target.value)} />
+      <button className="btn" type="submit">开始</button>
+    </form>
+  );
+}
 
 export default function BoardPage() {
   const params = useParams<{ id: string }>();
@@ -19,7 +51,7 @@ export default function BoardPage() {
     const timer = window.setInterval(() => {
       refresh().catch(() => undefined);
     }, 2000);
-    const source = new EventSource(`${API_BASE}/api/projects/${params.id}/events`);
+    const source = new EventSource(`${API_BASE}/api/projects/${params.id}/events?k=${encodeURIComponent(getKey())}`);
     source.onmessage = () => {
       refresh().catch(() => undefined);
     };
@@ -65,11 +97,21 @@ export default function BoardPage() {
         <span>已计量 {money(board.costs.actual_usd)}</span>
         <span>按当前路线预计 {money(board.costs.estimated_usd)}</span>
         <span>商用参考 {money(board.costs.reference_usd)}</span>
+        {board.costs.quote ? <span>开拍报价 {money(board.costs.quote.total_usd)}</span> : null}
       </div>
       <div className="bar" aria-hidden>
         <div style={{ width: `${ratio}%` }} />
       </div>
 
+      {board.project.status === "awaiting_script" ? (
+        <section className="panel">
+          <h3>剧本待确认</h3>
+          <p className="meta">默认全自动。这个项目打开了剧本确认，通过之后才会定妆和分镜。</p>
+          <button className="btn" type="button" onClick={() => void apiPost(`/api/projects/${params.id}/script/approve`).then(() => refresh())}>
+            通过剧本
+          </button>
+        </section>
+      ) : null}
       {board.episodes.length === 0 ? <p className="meta">编剧还没交剧本。镜头会在剧本落下后陆续出现。</p> : null}
       {board.episodes.map((episode) => (
         <section className="episode" key={episode.id}>
@@ -102,6 +144,7 @@ export default function BoardPage() {
                       );
                     })}
                   </div>
+                  <ShotRegen shotId={shot.id} onDone={() => void refresh()} />
                 </div>
               </article>
             ))}

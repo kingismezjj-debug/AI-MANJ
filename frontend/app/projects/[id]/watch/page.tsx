@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { apiGet, mediaUrl } from "@/lib/api";
+import { apiGet, authedUrl, mediaUrl } from "@/lib/api";
 import { money, type Board } from "@/lib/types";
 
 const CATEGORY: Record<string, string> = {
@@ -44,6 +44,8 @@ export default function WatchPage() {
           <a href={`/projects/${params.id}`}>制作板</a>
           {video ? <a href={video}>下载视频</a> : null}
           {subtitle ? <a href={subtitle}>下载字幕</a> : null}
+          <a href={authedUrl(`/api/projects/${params.id}/export?format=jianying`)}>导出剪映</a>
+          <a href={authedUrl(`/api/projects/${params.id}/export?format=editorial`)}>导出 EDL</a>
         </div>
       </div>
       <div className="player">
@@ -55,6 +57,7 @@ export default function WatchPage() {
           <span>已计量 {money(board.costs.actual_usd)}</span>
           <span>按当前模型预计 {money(board.costs.estimated_usd)}{board.costs.preliminary ? "（尚无剧本，按样片规模估算）" : ""}</span>
           <span>若换成商用组合 {money(board.costs.reference_usd)}</span>
+          {board.costs.quote ? <span>开拍报价 {money(board.costs.quote.total_usd)}，实际 {money(board.costs.actual_usd)}</span> : null}
         </div>
         <table>
           <thead>

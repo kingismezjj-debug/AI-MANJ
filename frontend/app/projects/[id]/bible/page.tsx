@@ -58,6 +58,11 @@ export default function BiblePage() {
             </div>
             <h3>{character.name}</h3>
             <p>{character.appearance}</p>
+            {character.anchors ? (
+              <p>
+                脸 {character.anchors.face || "—"} · 发型 {character.anchors.hair || "—"} · 服装 {character.anchors.outfit || "—"} · 色板 {character.anchors.palette || "—"}
+              </p>
+            ) : null}
             <p>种子 {character.seed} · {statusLabel(character.status)}{character.locked ? " · 已锁定" : ""}</p>
             <div className="row">
               {!character.locked && character.image_url ? (

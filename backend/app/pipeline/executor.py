@@ -31,10 +31,14 @@ def execute_job(job_id: str) -> None:
             job.status = "awaiting_approval"
             job.error = str(exc)
             if project is not None:
-                project.status = "awaiting_approval"
-                project.phase = "character_lock"
+                if getattr(exc, "kind", "bible") == "script":
+                    project.status = "awaiting_script"
+                    project.phase = "script_lock"
+                else:
+                    project.status = "awaiting_approval"
+                    project.phase = "character_lock"
             db.commit()
-            publish(job.project_id, {"type": "awaiting_approval", "job_id": job.id})
+            publish(job.project_id, {"type": project.status if project else "awaiting_approval", "job_id": job.id})
             return
         except QCRetry as exc:
             job.status = "failed"
@@ -83,5 +87,8 @@ def _fail_or_retry(db, job: Job, project: Project | None, exc: Exception) -> Non
     if project is not None:
         project.status = "failed"
         project.error = f"{job.stage}: {message}"
+        from app.billing import settle_project
+
+        settle_project(db, project)
     db.commit()
     publish(job.project_id, {"type": "job_failed", "job_id": job.id, "stage": job.stage, "error": message})

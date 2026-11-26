@@ -1,4 +1,4 @@
-from app.db.models import Artifact, Job, Project
+from app.db.models import Artifact, Job, Project, Shot
 from app.media.ffmpeg_tools import duration_of, has_stream
 from app.pipeline.executor import execute_job
 from app.storage import get_store
@@ -49,3 +49,7 @@ def test_sample_novel_renders_final_mp4(db, client):
     assert board["costs"]["actual_usd"] == 0
     assert board["costs"]["reference_usd"] > 0
     assert board["project"]["final_video_url"]
+    prompted = db.query(Shot).filter(Shot.project_id == project_id).all()
+    assert prompted
+    assert all("口型" in (shot.video_prompt or "") for shot in prompted)
+    assert all((shot.dialogue_timing or {}).get("end_sec", 0) >= 0 for shot in prompted)

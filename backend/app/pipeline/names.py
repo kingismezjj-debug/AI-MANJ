@@ -1,5 +1,6 @@
 INGEST = "ingest"
 SCREENWRITE = "screenwrite"
+SCRIPT_LOCK = "script_lock"
 CHARACTER_BIBLE = "character_bible"
 LOCATION_BIBLE = "location_bible"
 CHARACTER_LOCK = "character_lock"

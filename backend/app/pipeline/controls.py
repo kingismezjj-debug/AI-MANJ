@@ -7,8 +7,8 @@ the episode assemble job, which is still blocked at that point.
 
 from app.db.models import Character, Job, Project, Shot
 from app.db.session import SessionLocal
-from app.pipeline.graph import kick, schedule_video_regen
-from app.pipeline.names import ASSEMBLE_EPISODE, CHARACTER_LOCK, STORYBOARD
+from app.pipeline.graph import kick
+from app.pipeline.names import CHARACTER_LOCK, SCRIPT_LOCK, STORYBOARD
 
 
 class ControlError(Exception):
@@ -102,21 +102,33 @@ def regenerate_character(db, character_id: str) -> Job:
     return job
 
 
-def regenerate_shot(db, shot_id: str) -> None:
+def approve_script(db, project_id: str) -> None:
+    project = db.get(Project, project_id)
+    if project is None:
+        raise ControlError("项目不存在", 404)
+    settings = dict(project.settings or {})
+    settings["script_approved"] = True
+    project.settings = settings
+    lock = db.query(Job).filter(Job.project_id == project_id, Job.stage == SCRIPT_LOCK).one_or_none()
+    if lock is not None and lock.status == "awaiting_approval":
+        lock.status = "queued"
+        lock.enqueued = False
+        lock.error = None
+    if project.status == "awaiting_script":
+        project.status = "running"
+    db.commit()
+    kick(project_id)
+
+
+def regenerate_shot(db, shot_id: str, stage: str = "shot", prompt: str | None = None, dialogue: str | None = None) -> None:
+    from app.pipeline.regen import regenerate_shot_stage
+
     shot = db.get(Shot, shot_id)
     if shot is None:
         raise ControlError("镜头不存在", 404)
-    assemble = (
-        db.query(Job)
-        .filter(Job.stage == ASSEMBLE_EPISODE, Job.entity_id == shot.episode_id)
-        .one_or_none()
-    )
-    if assemble is not None and assemble.status in {"succeeded", "running"}:
-        raise ControlError("本集正在合成或已完成，不能单镜重生成")
     project = db.get(Project, shot.project_id)
-    shot.qc_attempts += 1
-    schedule_video_regen(db, shot)
-    if project.status in {"failed", "completed"}:
+    regenerate_shot_stage(db, shot, stage, prompt=prompt, dialogue=dialogue)
+    if project.status in {"failed", "completed", "awaiting_script", "awaiting_approval"}:
         project.status = "running"
         project.error = None
     db.commit()

@@ -52,4 +52,5 @@ def client(db):
     from app.main import app
 
     with TestClient(app) as test_client:
+        test_client.headers["X-API-Key"] = "zc-dev-admin"
         yield test_client

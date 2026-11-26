@@ -10,6 +10,7 @@ from app.pipeline.names import (
     CHARACTER_BIBLE,
     CHARACTER_LOCK,
     INGEST,
+    SCRIPT_LOCK,
     LIPSYNC,
     LOCATION_BIBLE,
     MUSIC,
@@ -65,6 +66,16 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
     locations = db.query(Location).filter(Location.project_id == project_id).all()
     episodes = db.query(Episode).filter(Episode.project_id == project_id).order_by(Episode.number).all()
     shots = db.query(Shot).filter(Shot.project_id == project_id).all()
+    script_lock = create_job(
+        db,
+        project_id=project_id,
+        stage=SCRIPT_LOCK,
+        entity_type="project",
+        entity_id=project_id,
+        depends_on=[screen_job_id],
+        key=f"script_lock:{project_id}",
+        max_attempts=1,
+    )
 
     char_jobs = [
         create_job(
@@ -73,7 +84,7 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
             stage=CHARACTER_BIBLE,
             entity_type="character",
             entity_id=character.id,
-            depends_on=[screen_job_id],
+            depends_on=[script_lock.id],
             key=f"character_bible:{character.id}",
         )
         for character in characters
@@ -85,7 +96,7 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
             stage=LOCATION_BIBLE,
             entity_type="location",
             entity_id=location.id,
-            depends_on=[screen_job_id],
+            depends_on=[script_lock.id],
             key=f"location_bible:{location.id}",
         )
     lock_deps = [job.id for job in char_jobs] or [screen_job_id]
@@ -120,7 +131,7 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
                 stage=TTS_TEMP,
                 entity_type="shot",
                 entity_id=shot.id,
-                depends_on=[screen_job_id],
+                depends_on=[script_lock.id],
                 key=f"tts_temp:{shot.id}",
             )
             voice = create_job(
@@ -129,7 +140,7 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
                 stage=VOICE,
                 entity_type="shot",
                 entity_id=shot.id,
-                depends_on=[screen_job_id],
+                depends_on=[script_lock.id],
                 key=f"voice:{shot.id}",
             )
             video = create_job(
@@ -176,7 +187,7 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
             stage=MUSIC,
             entity_type="episode",
             entity_id=episode.id,
-            depends_on=[screen_job_id],
+            depends_on=[script_lock.id],
             key=f"music:{episode.id}",
         )
         assemble = create_job(

@@ -11,6 +11,8 @@ export default function HomePage() {
   const [title, setTitle] = useState("雨夜来信");
   const [preset, setPreset] = useState("mock");
   const [approval, setApproval] = useState(false);
+  const [scriptGate, setScriptGate] = useState(false);
+  const [quote, setQuote] = useState<{ total_usd: number; reference_usd: number; assumption: string; lines: { stage: string; provider: string; detail: string; usd: number }[] } | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -21,7 +23,10 @@ export default function HomePage() {
 
   useEffect(() => {
     refresh().catch((err: Error) => setError(err.message));
-  }, []);
+    apiPost<typeof quote>("/api/estimates", { preset, use_sample: true })
+      .then((value) => setQuote(value))
+      .catch(() => undefined);
+  }, [preset]);
 
   async function createAndRun(useSample: boolean) {
     setBusy(useSample ? "sample" : "upload");
@@ -31,6 +36,7 @@ export default function HomePage() {
         title: title || "未命名项目",
         preset,
         require_bible_approval: approval,
+        require_script_approval: scriptGate,
       });
       if (useSample) {
         await apiPost(`/api/projects/${project.id}/novel/sample`);
@@ -94,9 +100,27 @@ export default function HomePage() {
             {file ? file.name : "选择 txt / docx / epub"}
           </label>
           <label className="check">
+            <input type="checkbox" checked={scriptGate} onChange={(event) => setScriptGate(event.target.checked)} />
+            先审剧本再往下做（默认关闭）
+          </label>
+          <label className="check">
             <input type="checkbox" checked={approval} onChange={(event) => setApproval(event.target.checked)} />
             角色定妆需要人工确认后再生成镜头
           </label>
+          {quote ? (
+            <div className="quote">
+              <p className="meta">开拍前报价 {money(quote.total_usd)} · 商用参考 {money(quote.reference_usd)}</p>
+              <ul>
+                {quote.lines.map((line) => (
+                  <li key={line.stage}>
+                    <span>{line.stage} · {line.provider} · {line.detail}</span>
+                    <span>{money(line.usd)}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="note">{quote.assumption}</p>
+            </div>
+          ) : null}
           <div className="row">
             <button className="btn" type="button" disabled={!!busy} onClick={() => void createAndRun(true)}>
               {busy === "sample" ? "正在开拍…" : "用《雨夜来信》开拍"}

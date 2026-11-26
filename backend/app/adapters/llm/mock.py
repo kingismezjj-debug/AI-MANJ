@@ -124,6 +124,8 @@ def screenplay_from_novel(text: str, max_shots: int = 6, max_episodes: int = 1) 
 
     cast = []
     for name, appearance in characters.items():
+        from app.pipeline.visual import derive_anchors
+
         cast.append(
             {
                 "name": name,
@@ -131,6 +133,7 @@ def screenplay_from_novel(text: str, max_shots: int = 6, max_episodes: int = 1) 
                 "appearance": appearance,
                 "personality": "克制",
                 "voice_hint": "female" if "夏" in name or "女" in appearance else "male",
+                "anchors": derive_anchors(appearance),
             }
         )
     location_specs = [{"name": name, "description": desc} for name, desc in locations.items()]

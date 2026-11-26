@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.router import ModelRouter
 from app.db.models import Character, Chunk, Episode, Job, Location, Novel, Project, Scene, Shot
-from app.media.audio_synth import synth_wav
+from app.media.audio_synth import pad_wav, synth_wav
 from app.media.ffmpeg_tools import burn_ass, concat_videos, duration_of, has_stream, mix_music, still_to_mp4
 from app.media.fonts import find_cjk_font
 from app.media.images import STYLE_SUFFIX, fit_png
@@ -28,6 +28,7 @@ from app.pipeline.names import (
     CHARACTER_LOCK,
     INGEST,
     LIPSYNC,
+    SCRIPT_LOCK,
     LOCATION_BIBLE,
     MUSIC,
     QC_FINAL,
@@ -40,11 +41,16 @@ from app.pipeline.names import (
 )
 from app.pipeline.prompts import ANALYSIS_SYSTEM, screen_system
 from app.pipeline.schema import clamp_screenplay, extract_json, parse_screenplay
+from app.pipeline.visual import apply_shot_prompt, as_dict, normalize_anchors
 from app.util import stable_seed
 
 
 class HoldForApproval(Exception):
-    """Character sheets exist, but a person still has to lock them."""
+    """A human checkpoint is on. `kind` is `script` or `bible`."""
+
+    def __init__(self, message: str, kind: str = "bible"):
+        super().__init__(message)
+        self.kind = kind
 
 
 class QCRetry(Exception):
@@ -150,6 +156,7 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
                 appearance=appearance,
                 personality=spec.personality,
                 voice_hint=spec.voice_hint,
+                anchors=normalize_anchors(appearance, getattr(spec, "anchors", None)),
                 seed=stable_seed(project.id, spec.name),
                 status="pending",
                 locked=False,
@@ -212,6 +219,8 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
                 running_number += 1
                 shot_count += 1
     db.flush()
+    for shot in db.query(Shot).filter(Shot.project_id == project.id).all():
+        apply_shot_prompt(db, shot)
     return {"episodes": len(screenplay.episodes), "shots": shot_count, "title": screenplay.title}
 
 
@@ -240,11 +249,26 @@ def run_screenwrite(db: Session, job: Job, project: Project) -> dict:
     return summary
 
 
+def run_script_lock(db: Session, job: Job, project: Project) -> dict:
+    settings = project.settings or {}
+    if settings.get("require_script_approval") and not settings.get("script_approved"):
+        raise HoldForApproval("waiting for script approval", kind="script")
+    return {"approved": True}
+
+
 def run_character_bible(db: Session, job: Job, project: Project) -> dict:
     character = db.get(Character, job.entity_id)
     if character is None:
         raise RuntimeError("character missing")
-    prompt = f"角色定妆设定图，正面半身与全身，纯色背景，{character.appearance}。{STYLE_SUFFIX}"
+    anchors = as_dict(character.anchors)
+    prompt = (
+        "角色定妆四宫格：脸部特写、发型、服装、色板。"
+        f"脸：{anchors.get('face') or character.appearance}。"
+        f"发型：{anchors.get('hair', '')}。"
+        f"服装：{anchors.get('outfit', '')}。"
+        f"色板：{anchors.get('palette', '')}。"
+        f"纯色背景。{STYLE_SUFFIX}"
+    )
     result = _router(db, project, job).image(
         prompt=prompt,
         width=project.width,
@@ -308,7 +332,7 @@ def run_location_bible(db: Session, job: Job, project: Project) -> dict:
 def run_character_lock(db: Session, job: Job, project: Project) -> dict:
     characters = db.query(Character).filter(Character.project_id == project.id).all()
     if characters and not all(character.locked for character in characters):
-        raise HoldForApproval("waiting for character approval")
+        raise HoldForApproval("waiting for character approval", kind="bible")
     return {"locked": len(characters)}
 
 
@@ -341,7 +365,8 @@ def run_storyboard(db: Session, job: Job, project: Project) -> dict:
         if location and location.reference_key:
             refs.append(store.get(location.reference_key))
             location_note = f"场景：{location.name}，{location.description}。"
-    prompt = f"{shot.visual_prompt}\n{location_note}景别：{shot.camera}。{STYLE_SUFFIX}"
+    apply_shot_prompt(db, shot)
+    prompt = f"{shot.video_prompt}\n{location_note}{STYLE_SUFFIX}"
     result = _router(db, project, job).image(
         prompt=prompt,
         width=project.width,
@@ -360,7 +385,7 @@ def run_storyboard(db: Session, job: Job, project: Project) -> dict:
         data=png,
         content_type="image/png",
         job_id=job.id,
-        meta={"reference_count": len(refs), "provider": result.provider, "seed": shot.seed},
+        meta={"reference_count": len(refs), "provider": result.provider, "seed": shot.seed, "anchors": True},
     )
     mark_shot(shot, STORYBOARD, "succeeded")
     return {"artifact_id": artifact.id, "reference_count": len(refs)}
@@ -378,7 +403,12 @@ def _speech_bytes(db, project, job, shot: Shot, speed: float) -> tuple[bytes, st
     if not text:
         return synth_wav(shot.duration_sec, freq=180, volume=0.08), "audio/wav", {"silent": True}
     result = _router(db, project, job).tts(text=text, voice=_voice_hint(db, shot), speed=speed)
-    return result.data, result.mime, {"provider": result.provider, "chars": len(text)}
+    timing = as_dict(shot.dialogue_timing) or {"start_sec": 0.2, "end_sec": shot.duration_sec}
+    data = result.data
+    mime = result.mime
+    if mime == "audio/wav":
+        data = pad_wav(data, shot.duration_sec, float(timing.get("start_sec") or 0))
+    return data, mime, {"provider": result.provider, "chars": len(text), "dialogue_timing": timing}
 
 
 def run_tts_temp(db: Session, job: Job, project: Project) -> dict:
@@ -426,8 +456,9 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
     if frame is None:
         raise RuntimeError("keyframe missing")
     refs = _refs_for_shot(db, store, shot)
+    apply_shot_prompt(db, shot)
     result = _router(db, project, job).video(
-        prompt=shot.visual_prompt or shot.description,
+        prompt=shot.video_prompt or shot.visual_prompt or shot.description,
         image=store.get(frame.storage_key),
         reference_images=refs,
         duration_sec=shot.duration_sec,
@@ -446,7 +477,12 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
         data=result.data,
         content_type="video/mp4",
         job_id=job.id,
-        meta={"provider": result.provider, "reference_count": len(refs), "duration_sec": result.duration_sec},
+        meta={
+            "provider": result.provider,
+            "reference_count": len(refs),
+            "duration_sec": result.duration_sec,
+            "dialogue_timing": shot.dialogue_timing,
+        },
     )
     mark_shot(shot, VIDEO, "succeeded")
     return {"artifact_id": artifact.id}
@@ -716,12 +752,16 @@ def run_qc_final(db: Session, job: Job, project: Project) -> dict:
     project.status = "completed"
     project.phase = "completed"
     project.error = None
-    return {"ok": True, "artifact_id": final.id, "duration_sec": duration}
+    from app.billing import settle_project
+
+    settlement = settle_project(db, project)
+    return {"ok": True, "artifact_id": final.id, "duration_sec": duration, "settlement": settlement}
 
 
 HANDLERS = {
     INGEST: run_ingest,
     SCREENWRITE: run_screenwrite,
+    SCRIPT_LOCK: run_script_lock,
     CHARACTER_BIBLE: run_character_bible,
     LOCATION_BIBLE: run_location_bible,
     CHARACTER_LOCK: run_character_lock,

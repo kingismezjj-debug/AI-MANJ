@@ -151,6 +151,33 @@ Metering is in `model_calls`. The watch page shows actual spend, a forecast for 
 
 `cd backend && pytest` covers parsing, adapter payload shapes, fallback, the character-lock gate, per-shot release, and a full mock render of the sample novel.
 
+## 审片、报价、剪映、积分、定妆锚点
+
+默认仍然是全自动。创建项目时可以打开两个检查点：先审剧本，或先确认角色定妆。没打开就一路做到成片。
+
+制作板上每个镜头有「重做」。可以选择整镜、分镜、视频、配音或口型，也可以改一句画面提示。其他镜头不动。质检失败时的自动重试还在。
+
+开拍按钮上方按当前模型路线列出编剧、定妆与分镜、视频、配音、口型、配乐的报价。模拟路线是 0，旁边仍有商用参考。成片页对照开拍报价和实际计量。单价在 `backend/app/adapters/pricing.py`。
+
+导出两个压缩包：
+
+- 剪映：`draft_content.json` 和 `draft_info.json`（时间是微秒，画布 9:16），加上视频、人声、字幕。这是剪映 5.9 / CapCut 本地明文草稿。剪映 6 及更新版本可能加密，打不开时用另一个包。
+- 通用：`timeline.edl`、`timeline.fcpxml`、`subtitles.srt` 和素材。
+
+积分按 API Key 区分用户。开发环境钥匙是 `zc-dev-user`（余额 100）和 `zc-dev-admin`（可在「积分」页充值）。开拍按报价乘以 `CREDIT_MARKUP`（默认 1.2）预扣，结束后按 `model_calls` 的实际金额结算，多退少补。流水在 `ledger_entries`。
+
+每个角色有脸、发型、服装、色板四个锚点，写进定妆、分镜和视频提示，定妆图作为参考图传给每一次出图和出视频。视频提示里写明对白只在一段时间内张嘴，配音音轨按同一时间点铺上静音。
+
+## Checkpoints, quotes, JianYing, credits, anchors
+
+Checkpoints for the script and the character bible are off unless the project turns them on. The board can rerun one shot or one stage, with an optional prompt, and leave every other shot alone.
+
+The form shows a per-stage quote before run. The watch page compares that quote with metered actuals. Prices live in `pricing.py`.
+
+Export a JianYing/CapCut plain-JSON draft (`draft_content.json` and `draft_info.json`, microseconds, 9:16) or a generic EDL + FCPXML + SRT package. JianYing 6 and newer may encrypt drafts; use the generic package then.
+
+`zc-dev-user` and `zc-dev-admin` are the local keys. A run holds `estimate × CREDIT_MARKUP` and settles on the metered total. Character anchors (face, hair, outfit, palette) are repeated in every image and video prompt, and the video prompt states the dialogue window used by the voice track.
+
 ## 范围
 
 这一版只做一种风格。配乐只有本地模拟。默认定妆自动通过；勾选「需要人工确认」后，制作板会停在定妆页。单集最多 2 集、每集 6 个镜头，避免一次真实调用打满配额，可在项目 `settings` 里改 `max_episodes` 和 `max_shots_per_episode`。角色重生成只在分镜开始前开放。

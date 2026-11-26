@@ -30,6 +30,7 @@ class Project(Base):
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     final_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -66,6 +67,7 @@ class Character(Base):
     appearance: Mapped[str] = mapped_column(Text, default="")
     personality: Mapped[str] = mapped_column(Text, default="")
     voice_hint: Mapped[str] = mapped_column(String(120), default="")
+    anchors: Mapped[dict] = mapped_column(JSON, default=dict)
     seed: Mapped[int] = mapped_column(Integer, default=0)
     reference_key: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(32), default="pending")
@@ -121,7 +123,10 @@ class Shot(Base):
     camera: Mapped[str] = mapped_column(String(80), default="中景")
     duration_sec: Mapped[float] = mapped_column(Float, default=3.0)
     visual_prompt: Mapped[str] = mapped_column(Text, default="")
+    video_prompt: Mapped[str] = mapped_column(Text, default="")
+    dialogue_timing: Mapped[dict] = mapped_column(JSON, default=dict)
     character_names: Mapped[list] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
     stage_status: Mapped[dict] = mapped_column(JSON, default=dict)
     qc_attempts: Mapped[int] = mapped_column(Integer, default=0)
     seed: Mapped[int] = mapped_column(Integer, default=0)
@@ -185,4 +190,28 @@ class ModelCall(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="succeeded")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[str] = mapped_column(String(32), default="user")
+    api_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    credit_balance: Mapped[float] = mapped_column(Float, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    project_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    amount: Mapped[float] = mapped_column(Float, default=0)
+    balance_after: Mapped[float] = mapped_column(Float, default=0)
+    note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

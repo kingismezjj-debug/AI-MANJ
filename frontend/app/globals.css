@@ -205,6 +205,12 @@ input[type="text"], select {
 }
 .pip.on { color: var(--moss); border-color: rgba(143, 191, 150, 0.4); }
 .pip.busy { color: var(--amber); border-color: rgba(226, 177, 90, 0.55); animation: pulse 1.2s ease-in-out infinite; }
+.regen { margin-top: 8px; display: grid; gap: 6px; }
+.regen textarea, .regen select { width: 100%; background: var(--bg); color: var(--ivory); border: 1px solid var(--line); border-radius: 8px; }
+.regen textarea { min-height: 52px; }
+button.regen { padding: 4px 8px; font-size: 12px; }
+.quote { margin-top: 12px; }
+.quote li { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); padding: 4px 0; }
 .pip.bad { color: #ffb1a8; border-color: rgba(226, 61, 50, 0.45); }
 @keyframes pulse { 50% { opacity: 0.45; } }
 

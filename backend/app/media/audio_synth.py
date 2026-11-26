@@ -27,6 +27,37 @@ def synth_wav(duration: float, freq: float = 220.0, sample_rate: int = 22050, vo
     return buf.getvalue()
 
 
+def pad_wav(data: bytes, total: float, lead: float) -> bytes:
+    """Place speech after `lead` seconds of silence and pad to `total`."""
+    import io
+    import struct
+    import wave
+
+    source = io.BytesIO(data)
+    with wave.open(source, "rb") as handle:
+        channels = handle.getnchannels()
+        width = handle.getsampwidth()
+        rate = handle.getframerate()
+        frames = handle.readframes(handle.getnframes())
+    frame_bytes = channels * width
+    lead_frames = int(max(0.0, lead) * rate)
+    total_frames = int(max(lead, total) * rate)
+    speech_frames = len(frames) // frame_bytes
+    room = max(0, total_frames - lead_frames)
+    speech = frames[: room * frame_bytes]
+    silence_lead = b"\x00" * (lead_frames * frame_bytes)
+    used = lead_frames + (len(speech) // frame_bytes)
+    silence_tail = b"\x00" * (max(0, total_frames - used) * frame_bytes)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(width)
+        handle.setframerate(rate)
+        handle.writeframes(silence_lead + speech + silence_tail)
+    del struct
+    return buf.getvalue()
+
+
 def synth_pad(duration: float) -> bytes:
     """A quiet two-note bed mixed in Python so the final cut is not silent."""
     duration = max(1.0, float(duration))

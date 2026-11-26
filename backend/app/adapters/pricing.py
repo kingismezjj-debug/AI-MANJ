@@ -74,17 +74,102 @@ def estimate_units(*, characters: int, locations: int, shots: int, dialogue_char
     }
 
 
+def estimate_lines(provider_by_category: dict[str, str], units: dict) -> list[dict]:
+    """One row per stage so the pre-run quote can be read before anyone clicks run."""
+    providers = provider_by_category
+    rows = [
+        (
+            "编剧",
+            "llm",
+            Usage(
+                input_tokens=units["llm_input_tokens"] * units["llm_calls"],
+                output_tokens=units["llm_output_tokens"] * units["llm_calls"],
+            ),
+            f"{units['llm_calls']} 次",
+        ),
+        ("定妆与分镜", "image", Usage(images=units["images"]), f"{units['images']} 张"),
+        ("视频", "video", Usage(video_seconds=units["video_seconds"]), f"{units['video_seconds']:.1f} 秒"),
+        ("配音", "tts", Usage(audio_chars=units["tts_chars"]), f"{units['tts_chars']} 字"),
+        ("口型", "lipsync", Usage(lipsync_seconds=units["lipsync_seconds"]), f"{units['lipsync_seconds']:.1f} 秒"),
+        ("配乐", "music", Usage(video_seconds=units["music_seconds"]), f"{units['music_seconds']:.1f} 秒"),
+    ]
+    lines = []
+    for stage, category, usage, detail in rows:
+        provider = providers.get(category, "mock")
+        lines.append(
+            {
+                "stage": stage,
+                "category": category,
+                "provider": provider,
+                "detail": detail,
+                "usd": round(cost_of(category, provider, usage), 6),
+            }
+        )
+    return lines
+
+
 def estimate_usd(provider_by_category: dict[str, str], units: dict) -> float:
-    llm = cost_of(
-        "llm",
-        provider_by_category.get("llm", "mock"),
-        Usage(input_tokens=units["llm_input_tokens"] * units["llm_calls"], output_tokens=units["llm_output_tokens"] * units["llm_calls"]),
+    return round(sum(line["usd"] for line in estimate_lines(provider_by_category, units)), 6)
+
+
+def providers_of(provider_config: dict | None) -> dict[str, str]:
+    selected = {}
+    for category in ("llm", "image", "video", "tts", "lipsync", "music"):
+        selected[category] = ((provider_config or {}).get(category) or {}).get("provider") or "mock"
+    return selected
+
+
+def forecast_from_counts(
+    *,
+    provider_config: dict | None,
+    characters: int,
+    locations: int,
+    shots: int,
+    dialogue_chars: int,
+    video_seconds: float,
+    preliminary: bool,
+    assumption: str,
+) -> dict:
+    units = estimate_units(
+        characters=characters,
+        locations=locations,
+        shots=shots,
+        dialogue_chars=dialogue_chars,
+        video_seconds=video_seconds,
     )
-    image = cost_of("image", provider_by_category.get("image", "mock"), Usage(images=units["images"]))
-    video = cost_of("video", provider_by_category.get("video", "mock"), Usage(video_seconds=units["video_seconds"]))
-    tts = cost_of("tts", provider_by_category.get("tts", "mock"), Usage(audio_chars=units["tts_chars"]))
-    lipsync = cost_of(
-        "lipsync", provider_by_category.get("lipsync", "mock"), Usage(lipsync_seconds=units["lipsync_seconds"])
+    selected = providers_of(provider_config)
+    lines = estimate_lines(selected, units)
+    return {
+        "lines": lines,
+        "total_usd": round(sum(line["usd"] for line in lines), 6),
+        "reference_usd": estimate_usd(REFERENCE_STACK, units),
+        "preliminary": preliminary,
+        "assumption": assumption,
+        "units": {
+            "characters": characters,
+            "locations": locations,
+            "shots": shots,
+            "dialogue_chars": dialogue_chars,
+            "video_seconds": video_seconds,
+        },
+    }
+
+
+def forecast_novel(provider_config: dict | None, settings: dict | None, char_count: int) -> dict:
+    """Quote a novel that has not been shot-listed yet.
+
+    Shot count is characters/90, capped by the project's episode and shot limits.
+    """
+    settings = settings or {}
+    cap = max(1, int(settings.get("max_episodes") or 2)) * max(1, int(settings.get("max_shots_per_episode") or 6))
+    shots = max(1, min(cap, round((char_count or 400) / 90) or 4))
+    return forecast_from_counts(
+        provider_config=provider_config,
+        characters=2,
+        locations=1,
+        shots=shots,
+        dialogue_chars=min(char_count or shots * 12, shots * 24),
+        video_seconds=shots * 2.5,
+        preliminary=True,
+        assumption=f"按约 {shots} 个镜头、每镜 2.5 秒估算，开拍后会按真实剧本重算。",
     )
-    music = cost_of("music", provider_by_category.get("music", "mock"), Usage(video_seconds=units["music_seconds"]))
-    return round(llm + image + video + tts + lipsync + music, 6)

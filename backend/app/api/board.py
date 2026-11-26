@@ -1,4 +1,5 @@
 from app.api.catalog import STAGE_LABELS
+from app.pipeline.visual import as_dict
 from app.api.costs import cost_report
 from app.db.models import Artifact, Character, Episode, Job, Location, Project, Scene, Shot
 
@@ -115,6 +116,7 @@ def build_board(db, project: Project) -> dict:
                 "description": character.description,
                 "appearance": character.appearance,
                 "voice_hint": character.voice_hint,
+                "anchors": as_dict(character.anchors),
                 "seed": character.seed,
                 "status": character.status,
                 "locked": character.locked,

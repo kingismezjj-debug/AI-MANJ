@@ -58,9 +58,11 @@ def preset_config(name: str) -> dict:
     return default_provider_config()
 
 
-def default_settings(*, require_bible_approval: bool = False) -> dict:
+def default_settings(*, require_bible_approval: bool = False, require_script_approval: bool = False) -> dict:
     return {
         "require_bible_approval": require_bible_approval,
+        "require_script_approval": require_script_approval,
+        "script_approved": False,
         "max_qc_retries": 1,
         "max_episodes": 2,
         "max_shots_per_episode": 6,

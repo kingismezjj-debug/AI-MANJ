@@ -37,6 +37,7 @@ class CharacterSpec(BaseModel):
     appearance: str = ""
     personality: str = ""
     voice_hint: str = ""
+    anchors: dict = Field(default_factory=dict)
 
 
 class LocationSpec(BaseModel):

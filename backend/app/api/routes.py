@@ -3,18 +3,21 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.adapters.pricing import forecast_novel
 from app.adapters.registry import default_settings, preset_config
 from app.api.board import build_board
 from app.api.catalog import public_catalog
 from app.api.costs import cost_report
+from app.billing import hold_for_run, top_up
 from app.config import get_settings
-from app.db.models import Artifact, Novel, Project
+from app.db.models import Artifact, Novel, Project, User
 from app.db.session import get_db
 from app.novel.parse import char_count, parse_bytes
 from app.pipeline.controls import (
     ControlError,
     approve_all,
     approve_character,
+    approve_script,
     regenerate_character,
     regenerate_shot,
     start_run,
@@ -31,6 +34,26 @@ class ProjectCreate(BaseModel):
     preset: str = "mock"
     provider_config: dict | None = None
     require_bible_approval: bool = False
+    require_script_approval: bool = False
+
+
+class EstimateRequest(BaseModel):
+    preset: str = "mock"
+    provider_config: dict | None = None
+    char_count: int = 0
+    use_sample: bool = False
+
+
+class RegenRequest(BaseModel):
+    stage: str = "shot"
+    prompt: str | None = None
+    dialogue: str | None = None
+
+
+class TopupRequest(BaseModel):
+    user_id: str
+    amount: float
+    note: str = ""
 
 
 def _project_out(project: Project) -> dict:
@@ -65,8 +88,12 @@ def providers():
 
 
 @router.get("/projects")
-def list_projects(db: Session = Depends(get_db)):
-    projects = db.query(Project).order_by(Project.created_at.desc()).all()
+def list_projects(request: Request, db: Session = Depends(get_db)):
+    user = _user(request, db)
+    query = db.query(Project)
+    if user.role != "admin":
+        query = query.filter(Project.user_id == user.id)
+    projects = query.order_by(Project.created_at.desc()).all()
     payload = []
     for project in projects:
         report = cost_report(db, project)
@@ -77,14 +104,18 @@ def list_projects(db: Session = Depends(get_db)):
 
 
 @router.post("/projects")
-def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
+def create_project(body: ProjectCreate, request: Request, db: Session = Depends(get_db)):
     config = body.provider_config or preset_config(body.preset)
     project = Project(
         title=body.title.strip() or "未命名项目",
         status="draft",
         phase="draft",
+        user_id=_user(request, db).id,
         provider_config=config,
-        settings=default_settings(require_bible_approval=body.require_bible_approval),
+        settings=default_settings(
+            require_bible_approval=body.require_bible_approval,
+            require_script_approval=body.require_script_approval,
+        ),
     )
     db.add(project)
     db.commit()
@@ -93,19 +124,29 @@ def create_project(body: ProjectCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str, db: Session = Depends(get_db)):
-    project = _load(db, project_id)
+def get_project(project_id: str, request: Request, db: Session = Depends(get_db)):
+    project = _load(db, project_id, request)
     return build_board(db, project)
 
 
 @router.get("/projects/{project_id}/costs")
-def project_costs(project_id: str, db: Session = Depends(get_db)):
-    return cost_report(db, _load(db, project_id))
+def project_costs(project_id: str, request: Request, db: Session = Depends(get_db)):
+    return cost_report(db, _load(db, project_id, request))
 
 
-def _load(db: Session, project_id: str) -> Project:
+def _user(request: Request, db: Session) -> User:
+    user = db.get(User, getattr(request.state, "user_id", None))
+    if user is None:
+        raise HTTPException(401, "需要 API Key")
+    return user
+
+
+def _load(db: Session, project_id: str, request: Request) -> Project:
     project = db.get(Project, project_id)
     if project is None:
+        raise HTTPException(404, "项目不存在")
+    user = _user(request, db)
+    if user.role != "admin" and project.user_id not in (None, user.id):
         raise HTTPException(404, "项目不存在")
     return project
 
@@ -136,8 +177,8 @@ def _store_novel(db: Session, project: Project, filename: str, data: bytes) -> d
 
 
 @router.post("/projects/{project_id}/novel")
-async def upload_novel(project_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    project = _load(db, project_id)
+async def upload_novel(project_id: str, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    project = _load(db, project_id, request)
     if project.status not in {"draft", "failed"}:
         raise HTTPException(409, "项目已经开拍，不能更换小说")
     data = await file.read()
@@ -145,8 +186,8 @@ async def upload_novel(project_id: str, file: UploadFile = File(...), db: Sessio
 
 
 @router.post("/projects/{project_id}/novel/sample")
-def upload_sample(project_id: str, db: Session = Depends(get_db)):
-    project = _load(db, project_id)
+def upload_sample(project_id: str, request: Request, db: Session = Depends(get_db)):
+    project = _load(db, project_id, request)
     if project.status not in {"draft", "failed"}:
         raise HTTPException(409, "项目已经开拍，不能更换小说")
     path = get_settings().sample_path()
@@ -156,12 +197,26 @@ def upload_sample(project_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/projects/{project_id}/run")
-def run_project(project_id: str, db: Session = Depends(get_db)):
-    project = _load(db, project_id)
-    try:
-        start_run(db, project)
-    except ControlError as exc:
-        _raise_control(exc)
+def run_project(project_id: str, request: Request, db: Session = Depends(get_db)):
+    project = _load(db, project_id, request)
+    user = _user(request, db)
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one_or_none()
+    if project.status == "draft":
+        quote = forecast_novel(project.provider_config, project.settings, novel.char_count if novel else 0)
+        settings = dict(project.settings or {})
+        settings["cost_quote"] = quote
+        project.settings = settings
+        try:
+            hold_for_run(db, user, project, quote["total_usd"])
+            start_run(db, project)
+        except ControlError as exc:
+            db.rollback()
+            _raise_control(exc)
+    else:
+        try:
+            start_run(db, project)
+        except ControlError as exc:
+            _raise_control(exc)
     db.refresh(project)
     return _project_out(project)
 
@@ -176,8 +231,8 @@ def approve_one(character_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/projects/{project_id}/characters/approve")
-def approve_cast(project_id: str, db: Session = Depends(get_db)):
-    _load(db, project_id)
+def approve_cast(project_id: str, request: Request, db: Session = Depends(get_db)):
+    _load(db, project_id, request)
     try:
         count = approve_all(db, project_id)
     except ControlError as exc:
@@ -194,18 +249,84 @@ def regen_character(character_id: str, db: Session = Depends(get_db)):
     return {"job_id": job.id, "status": job.status}
 
 
-@router.post("/shots/{shot_id}/regenerate")
-def regen_shot(shot_id: str, db: Session = Depends(get_db)):
+@router.post("/projects/{project_id}/script/approve")
+def approve_script_route(project_id: str, request: Request, db: Session = Depends(get_db)):
+    _load(db, project_id, request)
     try:
-        regenerate_shot(db, shot_id)
+        approve_script(db, project_id)
     except ControlError as exc:
         _raise_control(exc)
     return {"ok": True}
 
 
+@router.post("/shots/{shot_id}/regenerate")
+def regen_shot(shot_id: str, body: RegenRequest | None = None, db: Session = Depends(get_db)):
+    payload = body or RegenRequest()
+    try:
+        regenerate_shot(db, shot_id, stage=payload.stage, prompt=payload.prompt, dialogue=payload.dialogue)
+    except ControlError as exc:
+        _raise_control(exc)
+    return {"ok": True}
+
+
+@router.post("/estimates")
+def estimates(body: EstimateRequest):
+    config = body.provider_config or preset_config(body.preset)
+    char_count = body.char_count
+    if body.use_sample:
+        path = get_settings().sample_path()
+        if path.exists():
+            char_count = len("".join(path.read_text(encoding="utf-8").split()))
+    return forecast_novel(config, default_settings(), char_count)
+
+
+@router.get("/projects/{project_id}/export")
+def export_project(project_id: str, request: Request, format: str = "jianying", db: Session = Depends(get_db)):
+    project = _load(db, project_id, request)
+    if format not in {"jianying", "editorial"}:
+        raise HTTPException(400, "format 只能是 jianying 或 editorial")
+    from app.export.pack import build_zip
+
+    payload = build_zip(db, project, get_store(), "jianying" if format == "jianying" else "editorial")
+    filename = "zhenchuan-jianying.zip" if format == "jianying" else "zhenchuan-editorial.zip"
+    return Response(content=payload, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@router.get("/me")
+def me(request: Request, db: Session = Depends(get_db)):
+    user = _user(request, db)
+    return {"id": user.id, "name": user.name, "role": user.role, "credit_balance": user.credit_balance}
+
+
+@router.get("/admin/users")
+def admin_users(request: Request, db: Session = Depends(get_db)):
+    user = _user(request, db)
+    if user.role != "admin":
+        raise HTTPException(403, "需要管理员")
+    return [
+        {"id": item.id, "name": item.name, "role": item.role, "credit_balance": item.credit_balance}
+        for item in db.query(User).order_by(User.created_at).all()
+    ]
+
+
+@router.post("/admin/topup")
+def admin_topup(body: TopupRequest, request: Request, db: Session = Depends(get_db)):
+    user = _user(request, db)
+    if user.role != "admin":
+        raise HTTPException(403, "需要管理员")
+    target = db.get(User, body.user_id)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    try:
+        topped = top_up(db, target, body.amount, body.note)
+    except ControlError as exc:
+        _raise_control(exc)
+    return {"id": topped.id, "credit_balance": topped.credit_balance}
+
+
 @router.get("/projects/{project_id}/events")
-def project_events(project_id: str, db: Session = Depends(get_db)):
-    _load(db, project_id)
+def project_events(project_id: str, request: Request, db: Session = Depends(get_db)):
+    _load(db, project_id, request)
     settings = get_settings()
     if not settings.redis_url:
         def empty():
