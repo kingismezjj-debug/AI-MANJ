@@ -1,0 +1,18 @@
+INGEST = "ingest"
+SCREENWRITE = "screenwrite"
+CHARACTER_BIBLE = "character_bible"
+LOCATION_BIBLE = "location_bible"
+CHARACTER_LOCK = "character_lock"
+STORYBOARD = "storyboard"
+TTS_TEMP = "tts_temp"
+ANIMATIC = "animatic"
+VIDEO = "video"
+VOICE = "voice"
+LIPSYNC = "lipsync"
+SHOT_QC = "shot_qc"
+MUSIC = "music"
+ASSEMBLE_EPISODE = "assemble_episode"
+ASSEMBLE_FINAL = "assemble_final"
+QC_FINAL = "qc_final"
+
+SHOT_STAGES = [STORYBOARD, TTS_TEMP, ANIMATIC, VIDEO, VOICE, LIPSYNC, SHOT_QC]
