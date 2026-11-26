@@ -333,6 +333,7 @@ def grid(project_id: str, request: Request, db: Session = Depends(get_db)):
         kind="storyboard_grid",
         data=buf.getvalue(),
         content_type="image/png",
+        job_id=None,
         meta={"cells": min(len(frames), n * n)},
     )
     db.commit()

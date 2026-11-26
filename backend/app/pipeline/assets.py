@@ -148,6 +148,7 @@ def generate_views(db, project, asset: Asset, router, store, save_bytes) -> dict
             kind=f"view_{angle}",
             data=result.data,
             content_type="image/png",
+            job_id=None,
             meta={"angle": angle, "provider": result.provider},
         )
         views[angle] = artifact.id

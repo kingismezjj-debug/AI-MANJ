@@ -81,8 +81,8 @@ export default function ScriptPage() {
           {proposal.hunks.map((hunk, index) => (
             <label className="check" key={index}>
               <input type="checkbox" checked={picked.includes(index)} onChange={(event) => setPicked(event.target.checked ? [...picked, index] : picked.filter((item) => item !== index))} />
-              <span style={{ color: "#c45c4a" }}>{hunk.before}</span>
-              <span style={{ color: "#3d7a4a" }}>{hunk.after}</span>
+              <span style={{ color: "#c45c4a" }}>删 {hunk.before || "（空）"}</span>
+              <span style={{ color: "#3d7a4a" }}>增 {hunk.after || "（空）"}</span>
             </label>
           ))}
           <div className="row">
