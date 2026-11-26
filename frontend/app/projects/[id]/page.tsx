@@ -80,6 +80,7 @@ export default function BoardPage() {
           </p>
         </div>
         <div className="links">
+          <a href={`/projects/${params.id}/agents`}>Agent 协作</a>
           <a href={`/projects/${params.id}/bible`}>角色定妆</a>
           <a href={`/projects/${params.id}/watch`}>成片与费用</a>
           {board.project.status === "failed" ? (

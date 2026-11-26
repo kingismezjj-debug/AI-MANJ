@@ -6,6 +6,20 @@
 
 A novel goes in, a vertical AI short comes out. The unit of work is the shot. As soon as one shot's upstream artifact exists, that shot moves on. The default picture is 2D anime, 9:16, 720×1280. With no API keys, mock providers render the whole film locally.
 
+## 在页面里改三条接口
+
+打开制作台的「模型设置」。三条主接口是：
+
+1. **大脑 / 编剧**：总控和编剧共用。供应商选「OpenAI 兼容 / DeepSeek / 中转」，Base URL 填 `https://api.deepseek.com/v1`（自建中转就填中转地址），模型填 `deepseek-chat` 或 `deepseek-reasoner`，把 API Key 贴进去。密钥只存在数据库里，页面之后只显示掩码。
+2. **文生图**：Seedream，或兼容的图片接口。
+3. **视频**：Seedance、可灵，或通用 HTTP 轮询。
+
+点「测试连接」会打一次最小请求并显示耗时和结果。保存后下一次调用立即生效，不用重启。环境变量仍然是空密钥时的后备；数据库里的值优先。选「本地模拟」可以不填密钥跑完整部片子。配音、口型和配乐收在折叠区，默认本地模拟。
+
+每个项目的「Agent 协作」页能看到总控派给编剧、定妆、分镜、视频、配音、质检的消息，以及每一次接口调用（供应商、模型、耗时、费用、错误）。
+
+如果 API 被映射到宿主机的 8010（`docker-compose.override.yml` 里常见），构建前端时加上 `NEXT_PUBLIC_API_URL=http://localhost:8010`。容器内部端口仍然是 8000，服务名不变。
+
 ## 快速开始
 
 需要 Docker。
@@ -30,6 +44,14 @@ pytest
 ```
 
 机器上需要 `ffmpeg` 和一种中文字体（Debian/Ubuntu：`fonts-wqy-microhei`）。
+
+## Where the three APIs are
+
+Open **模型设置** in the nav. The brain slot is an OpenAI-compatible chat endpoint, defaulting to DeepSeek at `https://api.deepseek.com/v1` with model `deepseek-chat` (or `deepseek-reasoner`, or your relay). Image and video are the other two primary slots. Keys are stored in the database, masked in the UI, and applied on the next call without a restart. A saved key overrides the environment variable. Mock remains a provider you can select. **测试连接** makes one minimal call and shows latency or the error.
+
+**Agent 协作** on a project shows the director dispatching 编剧, 定妆, 分镜, 视频, 配音 and 质检, plus the live API call log.
+
+Host port 8010 via `docker-compose.override.yml` still works: the container listens on 8000 and the service name is `api`. Rebuild the web image with `NEXT_PUBLIC_API_URL=http://localhost:8010` if the browser should call that host port. Redis can stay unpublished.
 
 ## Setup
 

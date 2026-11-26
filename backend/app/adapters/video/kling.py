@@ -33,10 +33,19 @@ class KlingVideo:
         self.settings = get_settings()
         self.base_url = self.settings.kling_base_url.rstrip("/")
         self.default_model = self.settings.kling_video_model
+        self.api_key = self.settings.kling_api_key
         self.client = client or httpx.Client(timeout=120)
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
         self.create_path = "/v1/videos/image2video"
+
+    def apply_route(self, route: dict) -> None:
+        if route.get("api_key"):
+            self.api_key = route["api_key"]
+        if route.get("base_url"):
+            self.base_url = route["base_url"].rstrip("/")
+        if route.get("model"):
+            self.default_model = route["model"]
 
     def configure(self, params: dict | None):
         params = params or {}
@@ -65,7 +74,7 @@ class KlingVideo:
             self.client,
             "POST",
             f"{self.base_url}{self.create_path}",
-            headers=kling_headers(self.settings),
+            headers=self._headers(),
             json=body,
         ).json()
         data = created.get("data") or {}
@@ -93,6 +102,11 @@ class KlingVideo:
             extra={"task_id": task_id, "reference_count": len(reference_images or [])},
         )
 
+    def _headers(self) -> dict:
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        return kling_headers(self.settings)
+
     def _poll(self, task_id: str) -> dict:
         deadline = time.time() + self.poll_timeout
         while True:
@@ -101,7 +115,7 @@ class KlingVideo:
                 "GET",
                 f"{self.base_url}{self.create_path}/{task_id}",
                 idempotent=True,
-                headers=kling_headers(self.settings),
+                headers=self._headers(),
             ).json()
             data = payload.get("data") or {}
             status = str(data.get("task_status") or payload.get("task_status") or "").lower()

@@ -188,8 +188,45 @@ class ModelCall(Base):
     lipsync_seconds: Mapped[float] = mapped_column(Float, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    request_summary: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="succeeded")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ApiSlot(Base):
+    """One configured model endpoint. Global rows are the studio default.
+
+    A project row with enabled=True replaces the global slot for that project
+    only. Keys stay in this table and are never sent back to the browser whole.
+    """
+
+    __tablename__ = "api_slots"
+    __table_args__ = (UniqueConstraint("scope", "project_id", "category", name="uq_api_slot"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    scope: Mapped[str] = mapped_column(String(16), default="global")
+    project_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(64), default="mock")
+    base_url: Mapped[str] = mapped_column(String(300), default="")
+    api_key: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(160), default="")
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AgentEvent(Base):
+    __tablename__ = "agent_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(32), default="note")
+    content: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="info")
+    job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

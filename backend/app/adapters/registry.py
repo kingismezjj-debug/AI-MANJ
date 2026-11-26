@@ -62,6 +62,7 @@ def default_settings(*, require_bible_approval: bool = False, require_script_app
     return {
         "require_bible_approval": require_bible_approval,
         "require_script_approval": require_script_approval,
+        "use_global_models": True,
         "script_approved": False,
         "max_qc_retries": 1,
         "max_episodes": 2,
@@ -96,13 +97,20 @@ def build_adapter(category: str, route: dict):
     if builder is None:
         raise ProviderNotConfigured(f"unknown provider {category}/{provider}")
     adapter = builder()
+    if hasattr(adapter, "apply_route"):
+        adapter.apply_route(route or {})
     if hasattr(adapter, "configure"):
         adapter.configure((route or {}).get("params") or {})
     return adapter
 
 
-def route_chain(project, category: str) -> list[dict]:
-    configured = (project.provider_config or {}).get(category) or {"provider": "mock", "model": f"mock-{category}"}
+def route_chain(project, category: str, db=None) -> list[dict]:
+    if db is not None:
+        from app.settings_store import effective_slot
+
+        configured = effective_slot(db, project, category)
+    else:
+        configured = (project.provider_config or {}).get(category) or {"provider": "mock", "model": f"mock-{category}"}
     chain = [configured]
     for name in configured.get("fallbacks") or []:
         chain.append({"provider": name, "model": configured.get("model") if name == configured.get("provider") else "", "fallbacks": [], "params": {}})

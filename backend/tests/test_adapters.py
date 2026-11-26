@@ -228,7 +228,9 @@ def test_router_falls_back_to_mock(db):
 
     config = default_provider_config()
     config["llm"] = {"provider": "openai_compatible", "model": "gpt-test", "fallbacks": [], "params": {}}
-    project = Project(title="回退", provider_config=config, settings=default_settings())
+    settings = default_settings()
+    settings["use_global_models"] = False
+    project = Project(title="回退", provider_config=config, settings=settings)
     db.add(project)
     db.commit()
     get_settings.cache_clear()
@@ -238,8 +240,8 @@ def test_router_falls_back_to_mock(db):
     )
     assert "summary" in result.text
     calls = db.query(ModelCall).all()
-    assert any(call.provider == "openai_compatible" and call.status == "failed" for call in calls)
     assert any(call.provider == "mock" and call.status == "succeeded" for call in calls)
+    assert any("密钥为空" in (call.request_summary or "") for call in calls)
 
 
 def test_reference_quote_is_positive():

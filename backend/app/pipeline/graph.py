@@ -9,6 +9,7 @@ from app.pipeline.names import (
     ASSEMBLE_FINAL,
     CHARACTER_BIBLE,
     CHARACTER_LOCK,
+    DIRECTOR,
     INGEST,
     SCRIPT_LOCK,
     LIPSYNC,
@@ -331,13 +332,26 @@ def ensure_ingest_job(db: Session, project_id: str) -> Job:
     )
 
 
-def ensure_screen_job(db: Session, project_id: str, ingest_job_id: str) -> Job:
+def ensure_director_job(db: Session, project_id: str, ingest_job_id: str) -> Job:
+    return create_job(
+        db,
+        project_id=project_id,
+        stage=DIRECTOR,
+        entity_type="project",
+        entity_id=project_id,
+        depends_on=[ingest_job_id],
+        key=f"director:{project_id}",
+        max_attempts=2,
+    )
+
+
+def ensure_screen_job(db: Session, project_id: str, director_job_id: str) -> Job:
     return create_job(
         db,
         project_id=project_id,
         stage=SCREENWRITE,
         entity_type="project",
         entity_id=project_id,
-        depends_on=[ingest_job_id],
+        depends_on=[director_job_id],
         key=f"screenwrite:{project_id}",
     )

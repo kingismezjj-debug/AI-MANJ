@@ -182,6 +182,17 @@ class MockLLM:
     def complete(self, *, messages, model, temperature, json_mode) -> LLMResult:
         blob = "\n".join(message.get("content", "") for message in messages)
         novel = _novel_from_prompt(blob)
+        if "TASK:DIRECTOR" in blob:
+            payload = {
+                "summary": (novel or "测试")[:80],
+                "episodes": 1,
+                "shot_budget": 4,
+                "dispatch": ["编剧", "定妆", "分镜", "视频", "配音", "质检"],
+                "notes": "竖屏二次元，先锁定角色再出镜头。",
+            }
+            text = json.dumps(payload, ensure_ascii=False)
+            usage = Usage(input_tokens=max(1, len(blob) // 2), output_tokens=max(1, len(text) // 2))
+            return LLMResult(text=text, usage=usage, provider=self.provider, model=model or "mock-director")
         if "TASK:SCREENPLAY" in blob:
             max_shots = _int_flag(blob, "MAX_SHOTS", 6)
             max_episodes = _int_flag(blob, "MAX_EPISODES", 1)

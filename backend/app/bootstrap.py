@@ -41,6 +41,7 @@ def _ensure_columns() -> None:
             "dialogue_timing": "TEXT",
             "revision": "INTEGER DEFAULT 0",
         },
+        "model_calls": {"request_summary": "TEXT DEFAULT ''"},
     }
     inspector = inspect(engine)
     existing = set(inspector.get_table_names())
@@ -74,6 +75,9 @@ def _ensure_users() -> None:
                 )
             )
         db.commit()
+        from app.settings_store import ensure_defaults
+
+        ensure_defaults(db)
     finally:
         db.close()
 

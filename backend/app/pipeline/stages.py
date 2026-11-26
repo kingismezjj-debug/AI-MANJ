@@ -19,6 +19,7 @@ from app.media.images import STYLE_SUFFIX, fit_png
 from app.media.subtitles import build_ass
 from app.novel.parse import chunk_text
 from app.pipeline.artifacts import latest_artifact, materialize, save_bytes, temp_workspace
+from app.pipeline.agents import AGENT_FOR_STAGE, record
 from app.pipeline.graph import build_graph, ensure_screen_job, schedule_video_regen
 from app.pipeline.names import (
     ANIMATIC,
@@ -26,6 +27,7 @@ from app.pipeline.names import (
     ASSEMBLE_FINAL,
     CHARACTER_BIBLE,
     CHARACTER_LOCK,
+    DIRECTOR,
     INGEST,
     LIPSYNC,
     SCRIPT_LOCK,
@@ -68,12 +70,26 @@ def run_stage(db: Session, job: Job) -> dict:
     if project is None:
         raise RuntimeError("project missing")
     project.phase = job.stage
+    agent = AGENT_FOR_STAGE.get(job.stage, "director")
     handler = HANDLERS[job.stage]
     if job.entity_type == "shot":
         shot = db.get(Shot, job.entity_id)
         if shot is not None:
             mark_shot(shot, job.stage, "running")
-    return handler(db, job, project)
+    result = handler(db, job, project)
+    if job.stage != "director":
+        from app.pipeline.agents import AGENT_LABELS
+
+        record(
+            db,
+            project.id,
+            agent,
+            f"{AGENT_LABELS.get(agent, agent)}完成 {job.stage}",
+            kind="result",
+            status="succeeded",
+            job_id=job.id,
+        )
+    return result
 
 
 def _router(db, project, job) -> ModelRouter:
@@ -104,7 +120,9 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
         temperature=0.3,
     )
     novel.analysis = extract_json(result.text)
-    ensure_screen_job(db, project.id, job.id)
+    from app.pipeline.graph import ensure_director_job
+
+    ensure_director_job(db, project.id, job.id)
     return {"chunks": len(pieces), "title": novel.analysis.get("title")}
 
 
@@ -222,6 +240,39 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
     for shot in db.query(Shot).filter(Shot.project_id == project.id).all():
         apply_shot_prompt(db, shot)
     return {"episodes": len(screenplay.episodes), "shots": shot_count, "title": screenplay.title}
+
+
+def run_director(db: Session, job: Job, project: Project) -> dict:
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    result = _router(db, project, job).llm(
+        [
+            {
+                "role": "system",
+                "content": "TASK:DIRECTOR\n你是漫剧总控。阅读小说，决定集数和镜头规模，并列出要派发的工种。只输出 JSON。",
+            },
+            {"role": "user", "content": f"<<<NOVEL\n{novel.text[:8000]}\n>>>"},
+        ],
+        json_mode=True,
+        temperature=0.4,
+    )
+    plan = extract_json(result.text)
+    settings = dict(project.settings or {})
+    settings["director_plan"] = plan
+    project.settings = settings
+    dispatch = plan.get("dispatch") or ["编剧", "定妆", "分镜", "视频", "配音", "质检"]
+    record(
+        db,
+        project.id,
+        "director",
+        f"总控读完小说：{plan.get('summary') or project.title}。计划 {plan.get('episodes', 1)} 集、约 {plan.get('shot_budget', 4)} 个镜头。",
+        kind="plan",
+        status="succeeded",
+        job_id=job.id,
+    )
+    for name in dispatch:
+        record(db, project.id, "director", f"派给{name}", kind="dispatch", status="queued", job_id=job.id)
+    ensure_screen_job(db, project.id, job.id)
+    return {"dispatch": dispatch, "shot_budget": plan.get("shot_budget")}
 
 
 def run_screenwrite(db: Session, job: Job, project: Project) -> dict:
@@ -589,6 +640,15 @@ def run_shot_qc(db: Session, job: Job, project: Project) -> dict:
         shot.qc_attempts += 1
         schedule_video_regen(db, shot)
         mark_shot(shot, SHOT_QC, "retry")
+        record(
+            db,
+            project.id,
+            "director",
+            f"质检未过镜头 {shot.number}（{'；'.join(issues)}）。总控决定只重做这一镜的视频。",
+            kind="review",
+            status="retry",
+            job_id=job.id,
+        )
         raise QCRetry("; ".join(issues))
     mark_shot(shot, SHOT_QC, "failed")
     raise RuntimeError("qc failed: " + "; ".join(issues))
@@ -760,6 +820,7 @@ def run_qc_final(db: Session, job: Job, project: Project) -> dict:
 
 HANDLERS = {
     INGEST: run_ingest,
+    DIRECTOR: run_director,
     SCREENWRITE: run_screenwrite,
     SCRIPT_LOCK: run_script_lock,
     CHARACTER_BIBLE: run_character_bible,

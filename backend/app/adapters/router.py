@@ -30,7 +30,7 @@ class ModelRouter:
                 json_mode=json_mode,
             )
 
-        return self._invoke("llm", call)
+        return self._invoke("llm", call, summary="编剧/总控")
 
     def image(self, *, prompt, negative_prompt="", width, height, seed, reference_images=None):
         def call(adapter, route):
@@ -44,7 +44,7 @@ class ModelRouter:
                 model=route.get("model") or None,
             )
 
-        return self._invoke("image", call)
+        return self._invoke("image", call, summary=(prompt or "")[:80])
 
     def video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height):
         def call(adapter, route):
@@ -60,13 +60,13 @@ class ModelRouter:
                 model=route.get("model") or None,
             )
 
-        return self._invoke("video", call)
+        return self._invoke("video", call, summary=(prompt or "")[:80])
 
     def tts(self, *, text, voice, speed=1.0):
         def call(adapter, route):
             return adapter.synthesize(text=text, voice=voice, speed=speed, model=route.get("model") or None)
 
-        return self._invoke("tts", call)
+        return self._invoke("tts", call, summary=(text or "")[:80])
 
     def lipsync(self, *, video, audio, video_url=None, audio_url=None):
         def call(adapter, route):
@@ -78,32 +78,33 @@ class ModelRouter:
                 model=route.get("model") or None,
             )
 
-        return self._invoke("lipsync", call)
+        return self._invoke("lipsync", call, summary="口型")
 
     def music(self, *, prompt, duration_sec):
         def call(adapter, route):
             return adapter.generate(prompt=prompt, duration_sec=duration_sec, model=route.get("model") or None)
 
-        return self._invoke("music", call)
+        return self._invoke("music", call, summary=(prompt or "")[:80])
 
-    def _invoke(self, category: str, fn):
+    def _invoke(self, category: str, fn, summary: str = ""):
         last: Exception | None = None
-        for route in route_chain(self.project, category):
+        for route in route_chain(self.project, category, self.db):
             started = time.perf_counter()
+            note = route.get("_note") or summary
             try:
                 adapter = build_adapter(category, route)
                 result = fn(adapter, route)
             except Exception as exc:
                 logger.warning("provider %s/%s failed: %s", category, route.get("provider"), exc)
-                self._record(category, route, Usage(), started, "failed", str(exc))
+                self._record(category, route, Usage(), started, "failed", str(exc), note)
                 last = exc
                 continue
-            self._record(category, route, result.usage, started, "succeeded", None)
+            self._record(category, route, result.usage, started, "succeeded", None, note)
             return result
         assert last is not None
         raise last
 
-    def _record(self, category, route, usage: Usage, started: float, status: str, error: str | None):
+    def _record(self, category, route, usage: Usage, started: float, status: str, error: str | None, summary: str):
         latency_ms = int((time.perf_counter() - started) * 1000)
         cost = cost_of(category, route.get("provider") or "", usage) if status == "succeeded" else 0.0
         self.db.add(
@@ -123,6 +124,7 @@ class ModelRouter:
                 latency_ms=latency_ms,
                 status=status,
                 error=(error or "")[:1000] or None,
+                request_summary=(summary or "")[:300],
             )
         )
         self.db.flush()

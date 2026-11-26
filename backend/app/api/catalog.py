@@ -28,6 +28,7 @@ PRESETS = [
 
 STAGE_LABELS = {
     "ingest": "读入",
+    "director": "总控",
     "screenwrite": "编剧",
     "character_bible": "定妆",
     "location_bible": "场景",

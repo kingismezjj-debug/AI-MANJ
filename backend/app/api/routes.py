@@ -22,7 +22,9 @@ from app.pipeline.controls import (
     regenerate_shot,
     start_run,
 )
+from app.pipeline.agents import agent_board
 from app.pipeline.events import channel
+from app.settings_store import list_slots, probe_slot, save_slots
 from app.storage import get_store
 from app.util import new_id
 
@@ -56,6 +58,30 @@ class TopupRequest(BaseModel):
     note: str = ""
 
 
+class SlotBody(BaseModel):
+    category: str
+    provider: str = "mock"
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    params: dict | None = None
+    enabled: bool = True
+
+
+class SlotSave(BaseModel):
+    slots: list[SlotBody]
+
+
+class SlotTest(BaseModel):
+    category: str
+    provider: str = "mock"
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    params: dict | None = None
+    project_id: str = ""
+
+
 def _project_out(project: Project) -> dict:
     return {
         "id": project.id,
@@ -85,6 +111,39 @@ def health():
 @router.get("/providers")
 def providers():
     return public_catalog()
+
+
+@router.get("/settings/slots")
+def get_slots(db: Session = Depends(get_db)):
+    return list_slots(db)
+
+
+@router.put("/settings/slots")
+def put_slots(body: SlotSave, db: Session = Depends(get_db)):
+    return save_slots(db, [item.model_dump() for item in body.slots])
+
+
+@router.post("/settings/slots/test")
+def post_slot_test(body: SlotTest, db: Session = Depends(get_db)):
+    return probe_slot(db, body.model_dump())
+
+
+@router.get("/projects/{project_id}/slots")
+def project_slots(project_id: str, request: Request, db: Session = Depends(get_db)):
+    _load(db, project_id, request)
+    return list_slots(db, project_id)
+
+
+@router.put("/projects/{project_id}/slots")
+def put_project_slots(project_id: str, body: SlotSave, request: Request, db: Session = Depends(get_db)):
+    _load(db, project_id, request)
+    return save_slots(db, [item.model_dump() for item in body.slots], project_id=project_id)
+
+
+@router.get("/projects/{project_id}/agents")
+def project_agents(project_id: str, request: Request, db: Session = Depends(get_db)):
+    _load(db, project_id, request)
+    return agent_board(db, project_id)
 
 
 @router.get("/projects")
@@ -202,7 +261,10 @@ def run_project(project_id: str, request: Request, db: Session = Depends(get_db)
     user = _user(request, db)
     novel = db.query(Novel).filter(Novel.project_id == project.id).one_or_none()
     if project.status == "draft":
-        quote = forecast_novel(project.provider_config, project.settings, novel.char_count if novel else 0)
+        from app.settings_store import CATEGORIES, configured_slot
+
+        config = {category: configured_slot(db, project, category) for category in CATEGORIES}
+        quote = forecast_novel(config, project.settings, novel.char_count if novel else 0)
         settings = dict(project.settings or {})
         settings["cost_quote"] = quote
         project.settings = settings

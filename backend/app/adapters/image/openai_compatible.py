@@ -21,14 +21,24 @@ class OpenAICompatibleImage:
 
     def __init__(self, client: httpx.Client | None = None):
         settings = get_settings()
-        if not settings.openai_api_key:
-            raise ProviderNotConfigured("OPENAI_API_KEY is empty")
         self.api_key = settings.openai_api_key
         self.base_url = settings.openai_base_url.rstrip("/")
         self.default_model = settings.openai_image_model
         self.client = client or httpx.Client(timeout=180)
 
+    def apply_route(self, route: dict) -> None:
+        from app.settings_store import normalize_openai_base
+
+        if route.get("api_key"):
+            self.api_key = route["api_key"]
+        if route.get("base_url"):
+            self.base_url = normalize_openai_base(route["base_url"])
+        if route.get("model"):
+            self.default_model = route["model"]
+
     def generate(self, *, prompt, negative_prompt, width, height, seed, reference_images, model) -> MediaResult:
+        if not self.api_key:
+            raise ProviderNotConfigured("image API key is empty")
         chosen = model or self.default_model
         size = "1024x1792" if height >= width else "1792x1024"
         note = ""

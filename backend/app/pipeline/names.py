@@ -1,4 +1,5 @@
 INGEST = "ingest"
+DIRECTOR = "director"
 SCREENWRITE = "screenwrite"
 SCRIPT_LOCK = "script_lock"
 CHARACTER_BIBLE = "character_bible"

@@ -51,6 +51,15 @@ export async function apiPost<T>(path: string, payload?: unknown): Promise<T> {
   return parse<T>(response);
 }
 
+export async function apiPut<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "PUT",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  });
+  return parse<T>(response);
+}
+
 export async function apiUpload<T>(path: string, file: File): Promise<T> {
   const form = new FormData();
   form.append("file", file);

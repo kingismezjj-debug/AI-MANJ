@@ -24,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </a>
             <nav className="nav">
               <a href="/">项目</a>
+              <a href="/settings">模型设置</a>
               <a href="/admin">积分</a>
             </nav>
           </header>

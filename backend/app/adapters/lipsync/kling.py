@@ -32,9 +32,16 @@ class KlingLipSync:
     def __init__(self, client: httpx.Client | None = None, poll_interval: float = 3.0, poll_timeout: float = 600.0):
         self.settings = get_settings()
         self.base_url = self.settings.kling_base_url.rstrip("/")
+        self.api_key = self.settings.kling_api_key
         self.client = client or httpx.Client(timeout=120)
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
+
+    def apply_route(self, route: dict) -> None:
+        if route.get("api_key"):
+            self.api_key = route["api_key"]
+        if route.get("base_url"):
+            self.base_url = route["base_url"].rstrip("/")
 
     def configure(self, params: dict | None):
         params = params or {}
@@ -60,7 +67,7 @@ class KlingLipSync:
             self.client,
             "POST",
             f"{self.base_url}/v1/videos/lip-sync",
-            headers=kling_headers(self.settings),
+            headers=self._headers(),
             json={"input": payload_input},
         ).json()
         if created.get("code") not in (0, None):
@@ -85,6 +92,11 @@ class KlingLipSync:
             extra={"task_id": task_id},
         )
 
+    def _headers(self) -> dict:
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        return kling_headers(self.settings)
+
     def _poll(self, task_id: str) -> dict:
         deadline = time.time() + self.poll_timeout
         while True:
@@ -93,7 +105,7 @@ class KlingLipSync:
                 "GET",
                 f"{self.base_url}/v1/videos/lip-sync/{task_id}",
                 idempotent=True,
-                headers=kling_headers(self.settings),
+                headers=self._headers(),
             ).json()
             data = payload.get("data") or {}
             status = str(data.get("task_status") or "").lower()

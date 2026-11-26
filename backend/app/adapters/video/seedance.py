@@ -29,8 +29,6 @@ class SeedanceVideo:
 
     def __init__(self, client: httpx.Client | None = None, poll_interval: float = 3.0, poll_timeout: float = 600.0):
         settings = get_settings()
-        if not settings.ark_api_key:
-            raise ProviderNotConfigured("ARK_API_KEY is empty")
         self.api_key = settings.ark_api_key
         self.base_url = settings.ark_base_url.rstrip("/")
         self.default_model = settings.seedance_model
@@ -38,6 +36,14 @@ class SeedanceVideo:
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
         self.include_references = False
+
+    def apply_route(self, route: dict) -> None:
+        if route.get("api_key"):
+            self.api_key = route["api_key"]
+        if route.get("base_url"):
+            self.base_url = route["base_url"].rstrip("/")
+        if route.get("model"):
+            self.default_model = route["model"]
 
     def configure(self, params: dict | None):
         params = params or {}
@@ -49,6 +55,8 @@ class SeedanceVideo:
         return self
 
     def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model) -> MediaResult:
+        if not self.api_key:
+            raise ProviderNotConfigured("ARK_API_KEY is empty")
         chosen = model or self.default_model
         duration = max(4, min(12, int(round(float(duration_sec) or 5))))
         content: list[dict] = [{"type": "text", "text": prompt[:500]}]
