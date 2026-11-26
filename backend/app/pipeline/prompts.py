@@ -1,10 +1,10 @@
 ANALYSIS_SYSTEM = """TASK:ANALYSIS
-你是短剧策划。阅读小说，只输出 JSON，不要 Markdown。
-字段：title, summary（80字内）, genre, tone, characters（数组，元素含 name 与 notes）。
+你是短剧策划。阅读小说，只输出 json 对象，不要 Markdown，不要 {"type":"json_object"} 包装。
+示例：{"title":"雨夜","summary":"一句概括","genre":"都市","tone":"克制","characters":[{"name":"林夏","notes":"黑长直"}]}
 """
 
 SCREEN_SYSTEM = """TASK:SCREENPLAY MAX_EPISODES={max_episodes} MAX_SHOTS={max_shots}
-你是竖屏 AI 漫剧编剧。把小说改成短剧分镜剧本，只输出 JSON，不要 Markdown。
+你是竖屏 AI 漫剧编剧。把小说改成短剧分镜剧本。只输出 json 对象，顶层必须直接包含 characters 和 episodes。不要 Markdown，不要 {{"type":"json_object"}} 或 content 包装。
 硬性要求：
 - 画幅 9:16，风格二次元动漫。
 - 最多 {max_episodes} 集，每集最多 {max_shots} 个镜头。

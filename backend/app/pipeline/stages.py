@@ -44,7 +44,7 @@ from app.pipeline.names import (
     VOICE,
 )
 from app.pipeline.prompts import ANALYSIS_SYSTEM, screen_system
-from app.pipeline.schema import clamp_screenplay, extract_json, parse_screenplay
+from app.pipeline.schema import clamp_screenplay, complete_json, extract_json, parse_screenplay
 from app.pipeline.visual import apply_shot_prompt, as_dict, normalize_anchors
 from app.util import stable_seed
 
@@ -270,17 +270,12 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
         bump(db, project, stage="map", label="分析章节 1/1", done=0, total=1)
         project = db.get(Project, project.id)
         novel = db.query(Novel).filter(Novel.project_id == project.id).one()
-        result = router.llm(
-            [
-                {"role": "system", "content": ANALYSIS_SYSTEM},
-                {"role": "user", "content": f"<<<NOVEL\n{segments[0][1]}\n>>>"},
-            ],
-            json_mode=True,
-            temperature=0.3,
-        )
         from app.pipeline.longform import bible_from_analysis
 
-        payload = extract_json(result.text)
+        payload = complete_json(router, [
+            {"role": "system", "content": ANALYSIS_SYSTEM},
+            {"role": "user", "content": f"<<<NOVEL\n{segments[0][1]}\n>>>"},
+        ], temperature=0.3, what="小说分析")
         payload["bible"] = bible_from_analysis(payload)
         novel.analysis = payload
         bump(db, project, stage="reduce", label="生成故事圣经", done=1, total=1)
@@ -352,19 +347,9 @@ def _complete_screenplay(router: ModelRouter, project: Project, novel_text: str,
             "content": f"<<<NOVEL\n{novel_text}\n>>>\n分析：{json.dumps(analysis or {}, ensure_ascii=False)}",
         },
     ]
-    result = router.llm(messages, json_mode=True, temperature=0.7)
-    try:
-        return parse_screenplay(result.text)
-    except ValueError:
-        repair = router.llm(
-            [
-                {"role": "system", "content": "只输出合法 JSON，不要 Markdown。"},
-                {"role": "user", "content": result.text[:8000]},
-            ],
-            json_mode=True,
-            temperature=0,
-        )
-        return parse_screenplay(repair.text)
+    from app.pipeline.schema import Screenplay
+
+    return complete_json(router, messages, validate=Screenplay.model_validate, temperature=0.7, what="剧本")
 
 
 def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
@@ -490,18 +475,18 @@ def run_director(db: Session, job: Job, project: Project) -> dict:
         chapters = split_chapters(novel.text)
         bible = (novel.analysis or {}).get("bible") or {}
         source = json.dumps(bible, ensure_ascii=False) + "\n" + chapters[-1][:2000]
-    result = _router(db, project, job).llm(
+    plan = complete_json(
+        _router(db, project, job),
         [
             {
                 "role": "system",
-                "content": "TASK:DIRECTOR\n你是漫剧总控。阅读小说，决定集数和镜头规模，并列出要派发的工种。只输出 JSON。",
+                "content": "TASK:DIRECTOR\n你是漫剧总控。只输出 json。示例：{\"summary\":\"\",\"episodes\":1,\"shot_budget\":4,\"dispatch\":[\"编剧\"]}",
             },
             {"role": "user", "content": f"<<<NOVEL\n{source}\n>>>"},
         ],
-        json_mode=True,
         temperature=0.4,
+        what="总控计划",
     )
-    plan = extract_json(result.text)
     settings = dict(project.settings or {})
     settings["director_plan"] = plan
     project.settings = settings

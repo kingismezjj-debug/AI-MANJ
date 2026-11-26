@@ -24,7 +24,8 @@ from app.pipeline.names import (
     VIDEO,
     VOICE,
 )
-from app.pipeline.schema import EpisodeSpec, SceneSpec, Screenplay, ShotSpec, clamp_screenplay, extract_json, parse_screenplay
+from app.pipeline.prompts import SCREEN_SYSTEM
+from app.pipeline.schema import EpisodeSpec, SceneSpec, Screenplay, ShotSpec, clamp_screenplay, complete_json, extract_json
 from app.pipeline.visual import apply_shot_prompt, normalize_anchors
 from app.util import stable_seed
 
@@ -40,18 +41,18 @@ def bible_from_analysis(analysis: dict) -> dict:
 
 
 def reduce_bible(router, notes: list[dict]) -> dict:
-    result = router.llm(
+    return complete_json(
+        router,
         [
             {
                 "role": "system",
-                "content": "TASK:BIBLE_REDUCE\n把各章笔记收成故事圣经。角色要写明不同阶段的外形变化。只输出 JSON。",
+                "content": "TASK:BIBLE_REDUCE\n把各章笔记收成故事圣经。只输出 json。示例：{\"title\":\"\",\"summary\":\"\",\"bible\":{\"characters\":[],\"world\":\"\",\"timeline\":[]}}",
             },
             {"role": "user", "content": json.dumps({"notes": notes}, ensure_ascii=False)},
         ],
-        json_mode=True,
         temperature=0.2,
+        what="故事圣经",
     )
-    return extract_json(result.text)
 
 
 MAP_PROMPT_VERSION = "map-v3"
@@ -112,33 +113,34 @@ def map_chapter(router, part: str, index: int, *, db=None, project_id: str | Non
         cached = cached_note(db, project_id, part)
         if cached is not None:
             return cached
-    result = router.llm(
+    payload = complete_json(
+        router,
         [
             {
                 "role": "system",
-                "content": "TASK:BIBLE_MAP\n用很短的 JSON 记下人物、地点、时间。notes 不超过 80 字。只输出 JSON。",
+                "content": "TASK:BIBLE_MAP\n用很短的 json 记下人物、地点、时间。示例：{\"notes\":\"一句\",\"characters\":[],\"places\":[]}",
             },
             {"role": "user", "content": f"PART={index}\n<<<NOVEL\n{part}\n>>>"},
         ],
-        json_mode=True,
         temperature=0.2,
         model=model,
         max_tokens=MAP_MAX_TOKENS,
+        what="章节笔记",
     )
-    payload = extract_json(result.text)
     if db is not None and project_id:
         store_note(db, project_id, part, payload)
     return payload
 
 
 def build_outline(router, bible: dict, chapters: list[str], episode_count: int, shots_per: int) -> list[dict]:
-    result = router.llm(
+    payload = complete_json(
+        router,
         [
             {
                 "role": "system",
                 "content": (
                     f"TASK:OUTLINE EPISODE_COUNT={episode_count} SHOTS_PER={shots_per}\n"
-                    "按章节给出分集大纲。只输出 JSON：episodes[{number,title,synopsis,chapter_index}]。"
+                    "按章节给出分集大纲。只输出 json。示例：{\"episodes\":[{\"number\":1,\"title\":\"\",\"synopsis\":\"\",\"chapter_index\":0}]}"
                 ),
             },
             {
@@ -149,10 +151,9 @@ def build_outline(router, bible: dict, chapters: list[str], episode_count: int, 
                 ),
             },
         ],
-        json_mode=True,
         temperature=0.3,
+        what="分集大纲",
     )
-    payload = extract_json(result.text)
     episodes = payload.get("episodes") or []
     return episodes[: max(1, episode_count)]
 
@@ -163,7 +164,7 @@ def script_chapter(router, project, chapter: str, bible: dict, number: int, shot
             "role": "system",
             "content": (
                 f"TASK:EPISODE EPISODE_NUMBER={number} MAX_EPISODES=1 MAX_SHOTS={shots_per}\n"
-                "只写这一集的剧本 JSON，字段与整本剧本相同。"
+                + SCREEN_SYSTEM.format(max_episodes=1, max_shots=shots_per)
             ),
         },
         {
@@ -171,19 +172,7 @@ def script_chapter(router, project, chapter: str, bible: dict, number: int, shot
             "content": f"<<<NOVEL\n{chapter}\n>>>\n圣经：{json.dumps(bible, ensure_ascii=False)[:4000]}",
         },
     ]
-    result = router.llm(messages, json_mode=True, temperature=0.6)
-    try:
-        screenplay = parse_screenplay(result.text)
-    except ValueError:
-        repair = router.llm(
-            [
-                {"role": "system", "content": "只输出合法 JSON。"},
-                {"role": "user", "content": result.text[:8000]},
-            ],
-            json_mode=True,
-            temperature=0,
-        )
-        screenplay = parse_screenplay(repair.text)
+    screenplay = complete_json(router, messages, validate=Screenplay.model_validate, temperature=0.6, what="剧本")
     screenplay = clamp_screenplay(screenplay, {"max_episodes": 1, "max_shots_per_episode": shots_per})
     if screenplay.episodes:
         screenplay.episodes[0].number = number

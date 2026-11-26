@@ -1,7 +1,12 @@
 import json
+import logging
 import re
 
 from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger(__name__)
+
+WRAPPER_KEYS = ("content", "data", "result", "json", "screenplay", "output", "message", "text", "payload", "response")
 
 
 class ShotSpec(BaseModel):
@@ -53,23 +58,119 @@ class Screenplay(BaseModel):
     episodes: list[EpisodeSpec]
 
 
+def _strip_fences(raw: str) -> str:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _parse_object(raw: str):
+    text = _strip_fences(raw)
+    if not text:
+        return None
+    try:
+        if text[0] in "{[":
+            parsed = json.loads(text)
+        else:
+            start, end = text.find("{"), text.rfind("}")
+            if start < 0 or end <= start:
+                return None
+            parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, list):
+        parsed = next((item for item in parsed if isinstance(item, dict)), None)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _has_body(value: dict) -> bool:
+    return any(key in value for key in ("characters", "episodes", "notes", "bible", "summary", "title", "dispatch", "scenes", "text"))
+
+
+def _unwrap(value: dict, depth: int = 0) -> dict:
+    if depth > 5 or _has_body(value):
+        return value
+    if value.get("type") == "json_object":
+        for key, inner in value.items():
+            if key == "type":
+                continue
+            parsed = inner if isinstance(inner, dict) else _parse_object(inner) if isinstance(inner, str) else None
+            if isinstance(parsed, dict):
+                return _unwrap(parsed, depth + 1)
+    for key in WRAPPER_KEYS:
+        if key not in value:
+            continue
+        inner = value[key]
+        parsed = inner if isinstance(inner, dict) else _parse_object(inner) if isinstance(inner, str) else None
+        if isinstance(parsed, dict) and parsed is not value:
+            return _unwrap(parsed, depth + 1)
+    return value
+
+
 def extract_json(text: str) -> dict:
-    raw = (text or "").strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        raw = raw[start : end + 1]
-    return json.loads(raw)
+    parsed = _parse_object(text if isinstance(text, str) else json.dumps(text, ensure_ascii=False))
+    if parsed is None:
+        logger.warning("llm json parse failed raw=%s", str(text)[:800])
+        raise ValueError("模型没有返回 JSON 对象")
+    return _unwrap(parsed)
+
+
+def _plain_error(exc: Exception) -> str:
+    text = str(exc)
+    bits = []
+    if "characters" in text and "Field required" in text:
+        bits.append("缺少角色 characters")
+    if "episodes" in text and "Field required" in text:
+        bits.append("缺少分集 episodes")
+    if "title" in text and "Field required" in text:
+        bits.append("缺少标题 title")
+    return "；".join(bits) or text[:180]
 
 
 def parse_screenplay(text: str) -> Screenplay:
     try:
         return Screenplay.model_validate(extract_json(text))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise ValueError(f"invalid screenplay JSON: {exc}") from exc
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        logger.warning("screenplay json invalid: %s raw=%s", exc, str(text)[:800])
+        raise ValueError(f"剧本 JSON 不合格：{_plain_error(exc)}") from exc
+
+
+def complete_json(router, messages, *, validate=None, temperature: float = 0.4, model: str | None = None, max_tokens: int | None = None, what: str = "结果"):
+    """Call the model, unwrap JSON, and repair up to twice. Each call is metered."""
+    current = list(messages)
+    last_text = ""
+    last_error = ""
+    for attempt in range(3):
+        result = router.llm(
+            current,
+            json_mode=True,
+            temperature=0 if attempt else temperature,
+            model=model,
+            max_tokens=max_tokens,
+        )
+        last_text = result.text or ""
+        try:
+            payload = extract_json(last_text)
+            if validate is not None:
+                return validate(payload)
+            return payload
+        except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+            last_error = _plain_error(exc)
+            logger.warning("llm json %s attempt %s failed: %s raw=%s", what, attempt + 1, last_error, last_text[:800])
+            current = [
+                {
+                    "role": "system",
+                    "content": "只输出一个 json 对象。不要 Markdown，不要 {\"type\":\"json_object\"} 这种包装。",
+                },
+                {
+                    "role": "user",
+                    "content": f"校验错误：\n{last_error}\n\n错误输出：\n{last_text[:6000]}\n\n请输出修正后的 json。",
+                },
+            ]
+    logger.error("llm json %s gave up raw=%s", what, last_text[:800])
+    raise ValueError(f"{what}没有通过校验：{last_error}。请点重试。")
 
 
 def clamp_screenplay(screenplay: Screenplay, settings: dict) -> Screenplay:
