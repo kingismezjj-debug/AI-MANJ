@@ -181,7 +181,9 @@ def snapshot(db, project) -> dict:
         finish_done=finish_done,
     )
     running = next((job for job in jobs if job.status == "running"), None)
-    if project.status == "interrupted":
+    if project.status == "trial_done":
+        label = "试做完成"
+    elif project.status == "interrupted":
         label = "已中断"
     elif project.status == "failed":
         label = "出错"
