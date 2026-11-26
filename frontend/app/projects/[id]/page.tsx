@@ -86,6 +86,7 @@ export default function BoardPage() {
           <a href={`/projects/${params.id}/agents`}>Agent 协作</a>
           <a href={`/projects/${params.id}/bible`}>角色定妆</a>
           <a href={`/projects/${params.id}/watch`}>成片与费用</a>
+          <button className="btn secondary" type="button" onClick={() => void apiPost<{ url: string }>(`/api/projects/${params.id}/grid`).then((body) => window.open(mediaUrl(body.url), "_blank")).catch((err: Error) => setError(err.message))}>分镜格</button>
           {board.project.status === "failed" ? (
             <button className="btn secondary" type="button" onClick={() => void apiPost(`/api/projects/${params.id}/run`).then(() => refresh())}>
               继续
