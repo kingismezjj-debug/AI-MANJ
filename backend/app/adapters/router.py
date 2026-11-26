@@ -1,6 +1,7 @@
 import logging
 import time
 
+from app.adapters.errors import ProviderNotConfigured
 from app.adapters.keys import call_with_keys, split_keys
 from app.adapters.pricing import cost_of
 from app.adapters.registry import build_adapter, route_chain
@@ -110,6 +111,13 @@ class ModelRouter:
                 adapter = build_adapter(category, routed)
                 return fn(adapter, routed)
 
+            if (
+                category == "video"
+                and route.get("provider") == "mock"
+                and last is not None
+                and not isinstance(last, ProviderNotConfigured)
+            ):
+                break
             try:
                 result = call_with_keys(slot_id, keys, attempt)
             except Exception as exc:

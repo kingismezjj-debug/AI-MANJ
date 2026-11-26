@@ -915,6 +915,8 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
         height=height,
         last_image=None,
     )
+    if result.duration_sec and abs(float(result.duration_sec) - float(shot.duration_sec or 0)) > 0.2:
+        shot.duration_sec = float(result.duration_sec)
     artifact = save_bytes(
         db,
         store,

@@ -12,6 +12,7 @@ PROVIDERS = [
     {"category": "video", "provider": "seedance", "label": "Seedance（方舟）", "env": ["ARK_API_KEY"], "hint": "图生视频，首帧"},
     {"category": "video", "provider": "kling", "label": "可灵 Kling", "env": ["KLING_API_KEY"], "hint": "也可用 KLING_ACCESS_KEY + KLING_SECRET_KEY"},
     {"category": "video", "provider": "http_poll", "label": "通用 HTTP 轮询", "env": ["VIDEO_HTTP_API_KEY"], "hint": "在 params 里填 create_url / poll_url"},
+    {"category": "video", "provider": "openai_compatible", "label": "OpenAI 兼容视频", "env": ["OPENAI_API_KEY"], "hint": "new-api：POST /v1/video/generations，模型名区分大小写"},
     {"category": "tts", "provider": "mock", "label": "本地模拟", "env": [], "hint": "合成占位音色"},
     {"category": "tts", "provider": "minimax", "label": "MiniMax Speech", "env": ["MINIMAX_API_KEY"], "hint": "T2A v2"},
     {"category": "tts", "provider": "elevenlabs", "label": "ElevenLabs", "env": ["ELEVENLABS_API_KEY"], "hint": "multilingual v2"},

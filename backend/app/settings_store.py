@@ -306,6 +306,30 @@ def fetch_model_ids(base_url: str, api_key: str) -> list[str]:
     return [name for name in names if name]
 
 
+def _model_key(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def describe_model_match(model: str, names: list[str]) -> str:
+    """Case-sensitive check. A near miss is reported with the real id."""
+    if model in names:
+        return f"模型 {model} 在 /v1/models 中，未发起视频生成"
+    exact = [name for name in names if name.lower() == model.lower()]
+    loose: dict[str, list[str]] = {}
+    for name in names:
+        loose.setdefault(_model_key(name), []).append(name)
+    hits = exact or loose.get(_model_key(model)) or []
+    if len(hits) == 1 and hits[0] != model:
+        raise RuntimeError(f"模型 {model} 不存在。这个中转区分大小写，请改成 {hits[0]}")
+    videoish = [
+        name
+        for name in names
+        if any(token in name.lower() for token in ("minimax", "hailuo", "kling", "seedance", "veo", "sora", "video"))
+    ]
+    sample = "、".join((videoish or names)[:8]) or "（列表是空的）"
+    raise RuntimeError(f"模型 {model} 不在 /v1/models 里。可选：{sample}")
+
+
 def normalize_openai_base(url: str) -> str:
     url = (url or "").rstrip("/")
     if not url:
@@ -402,6 +426,12 @@ def _probe(category: str, slot: dict) -> str:
     base = slot.get("base_url") or _env_base(category, provider)
     if not base:
         raise RuntimeError("未填写 Base URL")
+    if category == "video" and provider == "openai_compatible":
+        model = (slot.get("model") or "").strip()
+        if not model:
+            raise RuntimeError("未填写视频模型 id")
+        names = fetch_model_ids(normalize_openai_base(base), slot["api_key"])
+        return describe_model_match(model, names)
     url = base if base.endswith("/models") else base.rstrip("/") + "/models"
     if provider == "openai_compatible":
         url = normalize_openai_base(base) + "/models"

@@ -181,7 +181,7 @@ def clamp_screenplay(screenplay: Screenplay, settings: dict) -> Screenplay:
         flat: list[tuple[SceneSpec, ShotSpec]] = []
         for scene in episode.scenes:
             for shot in scene.shots:
-                shot.duration_sec = max(2.0, min(8.0, float(shot.duration_sec or 2.5)))
+                shot.duration_sec = max(2.0, min(10.0, float(shot.duration_sec or 2.5)))
                 flat.append((scene, shot))
         flat = flat[:max_shots]
         scenes: list[SceneSpec] = []
