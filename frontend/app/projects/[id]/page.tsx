@@ -66,7 +66,10 @@ export default function BoardPage() {
   }
   const total = Object.values(board.counts).reduce((sum, value) => sum + value, 0);
   const done = board.counts.succeeded || 0;
-  const ratio = total ? Math.round((done / total) * 100) : 0;
+  const progress = board.progress;
+  const ratio = progress?.percent ?? (total ? Math.round((done / total) * 100) : 0);
+  const stalled = progress?.stalled;
+  const failed = progress?.state === "failed" || board.project.status === "failed";
 
   return (
     <main>
@@ -75,8 +78,8 @@ export default function BoardPage() {
           <p className="kicker">制作板 · {board.project.aspect_ratio} · 二次元</p>
           <h2>{board.project.title}</h2>
           <p className="activity">
-            {board.activity ? `正在${board.activity.label}` : statusLabel(board.project.status)}
-            {board.project.error ? ` · ${board.project.error}` : ""}
+            {progress?.label || (board.activity ? `正在${board.activity.label}` : statusLabel(board.project.status))}
+            {typeof ratio === "number" && !progress?.indeterminate ? ` · ${Math.round(ratio)}%` : ""}
           </p>
         </div>
         <div className="links">
@@ -87,25 +90,30 @@ export default function BoardPage() {
           <a href={`/projects/${params.id}/bible`}>角色定妆</a>
           <a href={`/projects/${params.id}/watch`}>成片与费用</a>
           <button className="btn secondary" type="button" onClick={() => void apiPost<{ url: string }>(`/api/projects/${params.id}/grid`).then((body) => window.open(mediaUrl(body.url), "_blank")).catch((err: Error) => setError(err.message))}>分镜格</button>
-          {board.project.status === "failed" ? (
+          {failed ? (
             <button className="btn secondary" type="button" onClick={() => void apiPost(`/api/projects/${params.id}/run`).then(() => refresh())}>
-              继续
+              重试
             </button>
           ) : null}
         </div>
       </div>
       <div className="meta">
-        <span className={`pill ${board.project.status === "completed" ? "ok" : board.project.status === "failed" ? "bad" : "run"}`}>
-          {statusLabel(board.project.status)}
+        <span className={`pill ${board.project.status === "completed" ? "ok" : failed ? "bad" : stalled ? "bad" : "run"}`}>
+          {failed ? "出错" : stalled ? "疑似卡住" : statusLabel(board.project.status)}
         </span>
+        {progress?.seconds_ago != null ? <span>最近一次活动 {progress.seconds_ago} 秒前</span> : null}
+        {progress?.last_call ? <span>上次调用 {progress.last_call.model || progress.last_call.provider} · {progress.last_call.status}</span> : null}
+        {progress?.eta_sec ? <span>大约还要 {Math.max(1, Math.round(progress.eta_sec / 60))} 分钟</span> : null}
         <span>已完成 {done}/{total || 0}</span>
         <span>已计量 {money(board.costs.actual_usd)}</span>
         <span>按当前路线预计 {money(board.costs.estimated_usd)}</span>
         <span>商用参考 {money(board.costs.reference_usd)}</span>
         {board.costs.quote ? <span>开拍报价 {money(board.costs.quote.total_usd)}</span> : null}
       </div>
-      <div className="bar" aria-hidden>
-        <div style={{ width: `${ratio}%` }} />
+      {failed && (progress?.error || board.project.error) ? <p className="error">{progress?.error || board.project.error}</p> : null}
+      {stalled ? <p className="error">已经 {progress?.seconds_ago} 秒没有新的模型调用。可以等它自己恢复，或者看工人日志。</p> : null}
+      <div className={`bar ${progress?.indeterminate ? "wait" : ""}`} aria-hidden>
+        <div style={{ width: progress?.indeterminate ? "100%" : `${ratio}%` }} />
       </div>
 
       {board.project.status === "awaiting_script" ? (
@@ -125,7 +133,7 @@ export default function BoardPage() {
               <div className="kicker">第 {episode.number} 集</div>
               <h3>{episode.title}</h3>
             </div>
-            <span className="pill">{statusLabel(episode.status)}</span>
+            <span className="pill">{episode.progress || statusLabel(episode.status)}</span>
           </header>
           <p className="hook">钩子：{episode.hook || "—"} · 悬念：{episode.cliffhanger || "—"}</p>
           <div className="film">

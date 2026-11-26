@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     dev_user_api_key: str = "zc-dev-user"
     dev_user_credits: float = 100
     credit_markup: float = 1.2
+    chapter_concurrency: int = 6
+    chapter_chars: int = 24000
+    stall_seconds: int = 180
 
     def sample_path(self) -> Path:
         if self.sample_novel_path:

@@ -24,6 +24,7 @@ export interface EpisodeCard {
   synopsis: string;
   status: string;
   shots: ShotCard[];
+  progress?: string;
 }
 
 export interface CharacterCard {
@@ -83,6 +84,7 @@ export interface Board {
   locations: { id: string; name: string; description: string; image_url: string | null; status: string }[];
   counts: Record<string, number>;
   activity: { stage: string; label: string; entity_type: string; entity_id: string } | null;
+  progress?: Progress;
   recent_jobs: { id: string; stage: string; label: string; status: string; error: string | null }[];
   costs: Costs;
 }
@@ -96,6 +98,19 @@ export interface ProjectSummary {
   created_at: string | null;
   settings?: { require_bible_approval?: boolean };
   costs?: { actual_usd: number; reference_usd: number };
+  progress?: Progress;
+}
+
+export interface Progress {
+  state: string;
+  label: string;
+  percent: number | null;
+  indeterminate: boolean;
+  seconds_ago: number | null;
+  eta_sec: number | null;
+  stalled: boolean;
+  error: string | null;
+  last_call: { provider: string; model: string; category: string; status: string; at: string | null } | null;
 }
 
 export const SHOT_STAGES: { key: string; label: string }[] = [

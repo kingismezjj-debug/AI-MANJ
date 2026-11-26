@@ -90,6 +90,18 @@ def build_board(db, project: Project) -> dict:
             "entity_type": running.entity_type,
             "entity_id": running.entity_id,
         }
+    from app.pipeline.progress import snapshot
+
+    progress = snapshot(db, project)
+    for episode in episode_payloads:
+        episode_shots = episode["shots"]
+        pictured = sum(1 for shot in episode_shots if (shot["stages"].get("storyboard") == "succeeded"))
+        if episode_shots:
+            episode["progress"] = f"镜头 {pictured}/{len(episode_shots)} 出图"
+        elif episode["status"] == "outlined":
+            episode["progress"] = "已列大纲，还没写剧本"
+        else:
+            episode["progress"] = ""
     final = latest.get((project.id, "final_video"))
     subtitle = latest.get((project.id, "subtitle"))
     return {
@@ -136,6 +148,7 @@ def build_board(db, project: Project) -> dict:
         ],
         "counts": counts,
         "activity": activity,
+        "progress": progress,
         "recent_jobs": [
             {
                 "id": job.id,

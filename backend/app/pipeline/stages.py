@@ -17,7 +17,7 @@ from app.media.ffmpeg_tools import burn_ass, concat_videos, duration_of, has_str
 from app.media.fonts import find_cjk_font
 from app.media.images import STYLE_SUFFIX, fit_png
 from app.media.subtitles import build_ass
-from app.novel.chapters import llm_parts, split_chapters
+from app.novel.chapters import llm_segments, split_chapters
 from app.pipeline.artifacts import latest_artifact, materialize, save_bytes, temp_workspace
 from app.pipeline.agents import AGENT_FOR_STAGE, record
 from app.pipeline.graph import build_graph, ensure_screen_job, schedule_video_regen
@@ -103,21 +103,155 @@ def _store():
     return get_store()
 
 
+def _chapter_workers(project: Project) -> int:
+    from app.config import get_settings
+
+    settings = get_settings()
+    configured = int((project.settings or {}).get("chapter_concurrency") or settings.chapter_concurrency or 6)
+    if (settings.database_url or "").startswith("sqlite"):
+        return 1
+    return max(1, min(configured, 12))
+
+
+def _map_notes(db: Session, job: Job, project: Project, segments: list[tuple[int, str]]) -> list[dict]:
+    """Map every segment. Postgres runs several calls at once; SQLite stays serial."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from app.db.session import SessionLocal
+    from app.pipeline.longform import map_chapter
+    from app.pipeline.progress import bump
+
+    total = len(segments)
+    notes: list[dict | None] = [None] * total
+    workers = 1 if total == 1 else _chapter_workers(project)
+    bump(db, project, stage="map", label=f"分析章节 0/{total}", done=0, total=total)
+    project_id = project.id
+    job_id = job.id
+
+    def one(index: int, part: str) -> tuple[int, dict]:
+        session = SessionLocal()
+        try:
+            current = session.get(Project, project_id)
+            note = map_chapter(ModelRouter(session, current, job_id), part, index)
+            session.commit()
+            return index, note
+        finally:
+            session.close()
+
+    done = 0
+    if workers == 1:
+        fresh = db.get(Project, project_id)
+        for index, (_chapter, part) in enumerate(segments):
+            bump(db, fresh, stage="map", label=f"分析章节 {done}/{total}", done=done, total=total)
+            _index, note = one(index, part)
+            notes[_index] = note
+            done += 1
+            fresh = db.get(Project, project_id)
+            bump(db, fresh, stage="map", label=f"分析章节 {done}/{total}", done=done, total=total)
+            _maybe_release_early(db, fresh, job, segments, notes)
+        return [note or {} for note in notes]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(one, index, part) for index, (_chapter, part) in enumerate(segments)]
+        for future in as_completed(futures):
+            index, note = future.result()
+            notes[index] = note
+            done += 1
+            fresh = db.get(Project, project_id)
+            bump(db, fresh, stage="map", label=f"分析章节 {done}/{total}", done=done, total=total)
+            _maybe_release_early(db, fresh, job, segments, notes)
+    return [note or {} for note in notes]
+
+
+def _maybe_release_early(db: Session, project: Project, job: Job, segments: list[tuple[int, str]], notes: list[dict | None]) -> None:
+    """Script the first episodes once their chapters are mapped. Later chapters keep going."""
+    from app.pipeline.graph import build_graph, create_job
+    from app.pipeline.longform import script_chapter
+    from app.pipeline.schema import Screenplay
+
+    settings = dict(project.settings or {})
+    if settings.get("early_started"):
+        return
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    chapters = split_chapters(novel.text)
+    if len(chapters) < 2:
+        return
+    first = max(1, int(settings.get("produce_first") or 2))
+    needed = {index for index, _part in segments if index < first}
+    if not needed or any(notes[pos] is None for pos, (chapter, _part) in enumerate(segments) if chapter in needed):
+        return
+    shots_per = int(settings.get("shots_per_episode") or settings.get("max_shots_per_episode") or 6)
+    partial = [note for note in notes if note]
+    bible = {"characters": [], "world": "连载", "timeline": [str(note.get("notes") or "")[:40] for note in partial[:8]], "phases": []}
+    router = _router(db, project, job)
+    scripted = []
+    characters = []
+    locations = []
+    for number in range(1, min(first, len(chapters)) + 1):
+        piece = script_chapter(router, project, chapters[number - 1], bible, number, shots_per)
+        scripted.extend(piece.episodes)
+        if not characters:
+            characters = piece.characters
+            locations = piece.locations
+    screenplay = Screenplay(
+        title=project.title,
+        characters=characters,
+        locations=locations,
+        episodes=scripted,
+    )
+    _persist_screenplay(db, project, screenplay)
+    for index, chapter in enumerate(chapters[first:], start=first + 1):
+        db.add(
+            Episode(
+                project_id=project.id,
+                number=index,
+                title=f"第{index}集",
+                synopsis=chapter[:80],
+                status="outlined",
+            )
+        )
+    db.flush()
+    early = create_job(
+        db,
+        project_id=project.id,
+        stage="early_script",
+        entity_type="project",
+        entity_id=project.id,
+        depends_on=[],
+        key=f"early_script:{project.id}",
+    )
+    early.status = "succeeded"
+    build_graph(db, project.id, early.id)
+    from app.pipeline.graph import kick
+
+    settings["early_started"] = True
+    project.settings = settings
+    db.commit()
+    kick(project.id)
+
+
 def run_ingest(db: Session, job: Job, project: Project) -> dict:
     novel = db.query(Novel).filter(Novel.project_id == project.id).one()
     if not (novel.text or "").strip():
         raise RuntimeError("novel text is empty")
+    from app.config import get_settings
+    from app.pipeline.progress import bump
+
+    size = int((project.settings or {}).get("chapter_chars") or get_settings().chapter_chars or 24000)
     db.query(Chunk).filter(Chunk.novel_id == novel.id).delete()
-    pieces = llm_parts(novel.text)
-    for index, piece in enumerate(pieces):
+    segments = llm_segments(novel.text, size=size)
+    for index, (_chapter, piece) in enumerate(segments):
         db.add(Chunk(novel_id=novel.id, idx=index, text=piece))
     db.flush()
     router = _router(db, project, job)
-    if len(pieces) == 1:
+    if len(segments) == 1:
+        bump(db, project, stage="map", label="分析章节 1/1", done=0, total=1)
+        project = db.get(Project, project.id)
+        novel = db.query(Novel).filter(Novel.project_id == project.id).one()
         result = router.llm(
             [
                 {"role": "system", "content": ANALYSIS_SYSTEM},
-                {"role": "user", "content": f"<<<NOVEL\n{pieces[0]}\n>>>"},
+                {"role": "user", "content": f"<<<NOVEL\n{segments[0][1]}\n>>>"},
             ],
             json_mode=True,
             temperature=0.3,
@@ -127,18 +261,24 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
         payload = extract_json(result.text)
         payload["bible"] = bible_from_analysis(payload)
         novel.analysis = payload
+        bump(db, project, stage="reduce", label="生成故事圣经", done=1, total=1)
     else:
-        from app.pipeline.longform import bible_from_analysis, map_chapter, reduce_bible
+        from app.pipeline.longform import bible_from_analysis, reduce_bible
 
-        notes = [map_chapter(router, piece, index) for index, piece in enumerate(pieces)]
-        novel.analysis = reduce_bible(router, notes)
+        notes = _map_notes(db, job, project, segments)
+        project = db.get(Project, project.id)
+        novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+        bump(db, project, stage="reduce", label="生成故事圣经", done=len(segments), total=len(segments))
+        project = db.get(Project, project.id)
+        novel.analysis = reduce_bible(_router(db, project, job), notes)
         novel.analysis.setdefault("bible", bible_from_analysis(novel.analysis))
         novel.analysis.setdefault("title", project.title)
         novel.analysis.setdefault("summary", (novel.analysis.get("bible") or {}).get("world") or "")
     from app.pipeline.graph import ensure_director_job
 
+    project = db.get(Project, project.id)
     ensure_director_job(db, project.id, job.id)
-    return {"chunks": len(pieces), "title": novel.analysis.get("title")}
+    return {"chunks": len(segments), "title": (novel.analysis or {}).get("title")}
 
 
 def _novel_for_writer(novel: Novel, db: Session) -> str:
@@ -255,6 +395,10 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
 
 
 def run_director(db: Session, job: Job, project: Project) -> dict:
+    from app.pipeline.progress import bump
+
+    bump(db, project, stage="director", label="总控在读小说", done=0, total=1)
+    project = db.get(Project, project.id)
     novel = db.query(Novel).filter(Novel.project_id == project.id).one()
     if len(novel.text) <= 8000:
         source = novel.text
@@ -333,8 +477,35 @@ def _write_series(db: Session, job: Job, project: Project, novel: Novel) -> dict
     count = int(settings.get("episode_count") or 60)
     first = int(settings.get("produce_first") or 2)
     shots_per = int(settings.get("shots_per_episode") or settings.get("max_shots_per_episode") or 6)
+    from app.pipeline.progress import bump
+
+    if db.query(Shot).filter(Shot.project_id == project.id).count():
+        bump(db, project, stage="script", label="补写后面的集", done=first, total=max(first, len(chapters)))
+        project = db.get(Project, project.id)
+        novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+        bible = (novel.analysis or {}).get("bible") or {}
+        outline = build_outline(_router(db, project, job), bible, chapters, count, shots_per)
+        existing = {episode.number for episode in db.query(Episode).filter(Episode.project_id == project.id).all()}
+        for item in outline:
+            number = int(item["number"])
+            if number in existing:
+                continue
+            db.add(
+                Episode(
+                    project_id=project.id,
+                    number=number,
+                    title=item.get("title") or f"第{number}集",
+                    synopsis=item.get("synopsis") or "",
+                    status="outlined",
+                )
+            )
+        db.flush()
+        queue_remaining_scripts(db, project.id, job.id)
+        bind_project_cards(db, project.id)
+        return {"episodes": len(existing), "outlined": len(outline), "early": True}
     bible = (novel.analysis or {}).get("bible") or {}
     router = _router(db, project, job)
+    bump(db, project, stage="script", label=f"写前 {first} 集剧本", done=0, total=max(first, 1))
     outline = build_outline(router, bible, chapters, count, shots_per)
     if not outline:
         outline = [

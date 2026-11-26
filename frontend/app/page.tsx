@@ -141,6 +141,7 @@ export default function HomePage() {
               <h3>{project.title}</h3>
               <div className="meta">
                 <span>{project.created_at ? new Date(project.created_at).toLocaleString() : ""}</span>
+                <span>{project.progress?.label || statusLabel(project.status)}{project.progress?.percent != null ? ` · ${Math.round(project.progress.percent)}%` : ""}</span>
                 <span>已计量 {money(project.costs?.actual_usd)}</span>
               </div>
             </div>

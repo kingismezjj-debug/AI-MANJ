@@ -160,8 +160,11 @@ def list_projects(request: Request, db: Session = Depends(get_db)):
     payload = []
     for project in projects:
         report = cost_report(db, project)
+        from app.pipeline.progress import snapshot
+
         item = _project_out(project)
         item["costs"] = {"actual_usd": report["actual_usd"], "reference_usd": report["reference_usd"]}
+        item["progress"] = snapshot(db, project)
         payload.append(item)
     return payload
 

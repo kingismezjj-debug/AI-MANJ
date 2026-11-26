@@ -157,6 +157,14 @@ input[type="text"], input[type="password"], select {
 .board-head h2 { font-family: "Noto Serif SC", serif; font-size: 36px; margin: 0; }
 .links { display: flex; gap: 14px; color: var(--gold); font-size: 14px; }
 .activity { color: var(--amber); min-height: 1.4em; margin: 8px 0 0; }
+.bar.wait div {
+  width: 40% !important;
+  animation: slide 1.4s ease-in-out infinite;
+}
+@keyframes slide {
+  0% { margin-left: 0; }
+  100% { margin-left: 60%; }
+}
 .bar { height: 8px; background: #2c261f; border-radius: 99px; overflow: hidden; margin: 14px 0 22px; }
 .bar > div { height: 100%; background: linear-gradient(90deg, var(--cinnabar), var(--gold)); }
 

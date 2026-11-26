@@ -31,18 +31,23 @@ def split_chapters(text: str) -> list[str]:
     return parts or [body]
 
 
-def llm_parts(text: str, size: int = 6000) -> list[str]:
-    """Every character of the book lands in some part. Windows overlap so a
-    sentence on a boundary is not the only copy of itself."""
-    parts: list[str] = []
-    for chapter in split_chapters(text):
+def llm_segments(text: str, size: int = 24000) -> list[tuple[int, str]]:
+    """Chapter index plus text. A chapter that fits in one context window is
+    one call. Longer chapters are cut into large windows, not 6k slices."""
+    segments: list[tuple[int, str]] = []
+    overlap = 400 if size >= 8000 else 200
+    for index, chapter in enumerate(split_chapters(text)):
         if len(chapter) <= size:
-            parts.append(chapter)
+            segments.append((index, chapter))
             continue
         start = 0
         while start < len(chapter):
-            parts.append(chapter[start : start + size])
+            segments.append((index, chapter[start : start + size]))
             if start + size >= len(chapter):
                 break
-            start += size - 200
-    return parts
+            start += max(1, size - overlap)
+    return segments
+
+
+def llm_parts(text: str, size: int = 24000) -> list[str]:
+    return [part for _chapter, part in llm_segments(text, size=size)]

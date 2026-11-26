@@ -4,8 +4,10 @@ Calls walk the keys in round-robin order. A 429 or 5xx puts that key on a
 short cooldown and the next key is tried. Keys are never logged whole.
 """
 
+import threading
 import time
 
+_lock = threading.Lock()
 _cursor: dict[str, int] = {}
 _cooldown_until: dict[str, float] = {}
 
@@ -23,7 +25,8 @@ def cooling(key: str, now: float | None = None) -> bool:
 
 def mark_cooldown(key: str, seconds: float = 60) -> None:
     if key:
-        _cooldown_until[key] = time.time() + seconds
+        with _lock:
+            _cooldown_until[key] = time.time() + seconds
 
 
 def retryable_status(exc: BaseException) -> bool:
@@ -32,12 +35,13 @@ def retryable_status(exc: BaseException) -> bool:
 
 
 def ordered_keys(slot_id: str, keys: list[str], now: float | None = None) -> list[str]:
-    usable = [key for key in keys if not cooling(key, now)]
-    if not usable:
-        return []
-    start = _cursor.get(slot_id, 0) % len(usable)
-    _cursor[slot_id] = start + 1
-    return usable[start:] + usable[:start]
+    with _lock:
+        usable = [key for key in keys if not cooling(key, now)]
+        if not usable:
+            return []
+        start = _cursor.get(slot_id, 0) % len(usable)
+        _cursor[slot_id] = start + 1
+        return usable[start:] + usable[:start]
 
 
 def call_with_keys(slot_id: str, keys: list[str], fn):
