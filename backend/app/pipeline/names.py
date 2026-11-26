@@ -1,6 +1,7 @@
 INGEST = "ingest"
 DIRECTOR = "director"
 SCREENWRITE = "screenwrite"
+EPISODE_SCRIPT = "episode_script"
 SCRIPT_LOCK = "script_lock"
 CHARACTER_BIBLE = "character_bible"
 LOCATION_BIBLE = "location_bible"

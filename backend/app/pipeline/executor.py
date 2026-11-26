@@ -7,6 +7,7 @@ from app.db.session import SessionLocal
 from app.pipeline.events import publish
 from app.pipeline.graph import kick
 from app.pipeline.stages import HoldForApproval, QCRetry, mark_shot, run_stage
+from app.pipeline.stuck import UpstreamPending, note_pending
 from app.util import utcnow
 
 logger = logging.getLogger(__name__)
@@ -34,11 +35,19 @@ def execute_job(job_id: str) -> None:
                 if getattr(exc, "kind", "bible") == "script":
                     project.status = "awaiting_script"
                     project.phase = "script_lock"
+                elif getattr(exc, "kind", "") == "grid":
+                    project.status = "awaiting_grid"
+                    project.phase = "grid"
                 else:
                     project.status = "awaiting_approval"
                     project.phase = "character_lock"
             db.commit()
             publish(job.project_id, {"type": project.status if project else "awaiting_approval", "job_id": job.id})
+            return
+        except UpstreamPending as exc:
+            note_pending(job, exc.task_id, exc.held_usd)
+            db.commit()
+            publish(job.project_id, {"type": "observing", "job_id": job.id})
             return
         except QCRetry as exc:
             job.status = "failed"

@@ -127,6 +127,12 @@ export function statusLabel(status: string): string {
     approved: "已锁定",
     assembled: "已合成",
     retry: "重试",
+    observing: "观察中",
+    verifying: "待核实",
+    outlined: "已列大纲",
+    scripted: "已写剧本",
+    stale: "待更新",
+    awaiting_grid: "待确认分镜格",
   };
   return map[status] || status;
 }

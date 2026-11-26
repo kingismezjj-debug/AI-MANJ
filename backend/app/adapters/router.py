@@ -1,6 +1,7 @@
 import logging
 import time
 
+from app.adapters.keys import call_with_keys, split_keys
 from app.adapters.pricing import cost_of
 from app.adapters.registry import build_adapter, route_chain
 from app.adapters.types import Usage
@@ -46,7 +47,7 @@ class ModelRouter:
 
         return self._invoke("image", call, summary=(prompt or "")[:80])
 
-    def video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height):
+    def video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, last_image=None):
         def call(adapter, route):
             return adapter.image_to_video(
                 prompt=prompt,
@@ -58,6 +59,7 @@ class ModelRouter:
                 width=width,
                 height=height,
                 model=route.get("model") or None,
+                last_image=last_image,
             )
 
         return self._invoke("video", call, summary=(prompt or "")[:80])
@@ -89,11 +91,19 @@ class ModelRouter:
     def _invoke(self, category: str, fn, summary: str = ""):
         last: Exception | None = None
         for route in route_chain(self.project, category, self.db):
-            started = time.perf_counter()
+            keys = split_keys(route.get("api_key") or "") or [""]
+            slot_id = f"{self.project.id}:{category}:{route.get('provider')}"
             note = route.get("_note") or summary
+            started = time.perf_counter()
+
+            def attempt(key: str, route=route):
+                routed = dict(route)
+                routed["api_key"] = key
+                adapter = build_adapter(category, routed)
+                return fn(adapter, routed)
+
             try:
-                adapter = build_adapter(category, route)
-                result = fn(adapter, route)
+                result = call_with_keys(slot_id, keys, attempt)
             except Exception as exc:
                 logger.warning("provider %s/%s failed: %s", category, route.get("provider"), exc)
                 self._record(category, route, Usage(), started, "failed", str(exc), note)

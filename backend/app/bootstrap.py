@@ -40,6 +40,8 @@ def _ensure_columns() -> None:
             "video_prompt": "TEXT",
             "dialogue_timing": "TEXT",
             "revision": "INTEGER DEFAULT 0",
+            "stale": "INTEGER DEFAULT 0",
+            "quality": "VARCHAR(16) DEFAULT 'final'",
         },
         "model_calls": {"request_summary": "TEXT DEFAULT ''"},
     }

@@ -11,6 +11,7 @@ AGENT_FOR_STAGE = {
     "ingest": "director",
     "director": "director",
     "screenwrite": "screenwriter",
+    "episode_script": "screenwriter",
     "script_lock": "director",
     "character_bible": "bible",
     "location_bible": "bible",

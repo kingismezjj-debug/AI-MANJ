@@ -12,6 +12,7 @@ interface Slot {
   enabled: boolean;
   api_key_set: boolean;
   api_key_mask: string;
+  api_key_count?: number;
   key_source: string;
   providers: string[];
 }
@@ -94,7 +95,8 @@ export default function SettingsPage() {
     <main>
       <p className="kicker">接口配置</p>
       <h2>模型设置</h2>
-      <p className="lead">三条主接口：总控和编剧共用大脑，文生图出定妆和分镜，视频出镜头。密钥只存在服务器上，页面只显示掩码。选「本地模拟」可以不填密钥跑完整条流水线。</p>
+      <p className="lead">三条主接口：总控和编剧共用大脑，文生图出定妆和分镜，视频出镜头。密钥只存在服务器上，页面只显示掩码。一个槽可以填多把密钥，一行一把，遇到 429 或 5xx 会换下一把。选「本地模拟」可以不填密钥跑完整条流水线。</p>
+      <RelayBox onDone={(text) => { setMessage(text); apiGet<{ slots: Slot[] }>("/api/settings/slots").then((body) => apply(body.slots)).catch((err: Error) => setError(err.message)); }} />
       {primary.map((slot) => (
         <SlotCard key={slot.category} slot={slot} hint={HINTS[slot.category]} secret={keys[slot.category] || ""} params={paramsText[slot.category] || "{}"} result={results[slot.category] || ""} onChange={update} onSecret={(value) => setKeys({ ...keys, [slot.category]: value })} onParams={(value) => setParamsText({ ...paramsText, [slot.category]: value })} onTest={() => void test(slot).catch((err: Error) => setError(err.message))} />
       ))}
@@ -110,6 +112,26 @@ export default function SettingsPage() {
       {message ? <p className="meta">{message}</p> : null}
       {error ? <p className="error">{error}</p> : null}
     </main>
+  );
+}
+
+function RelayBox({ onDone }: { onDone: (text: string) => void }) {
+  const [base, setBase] = useState("https://api.deepseek.com/v1");
+  const [key, setKey] = useState("");
+  const [error, setError] = useState("");
+  return (
+    <section className="panel" style={{ marginBottom: 14 }}>
+      <h3>一键配置中转站</h3>
+      <p className="meta">贴一个 Base URL 和密钥，大脑、文生图、视频三条都会写成 OpenAI 兼容。可以勾选去拉 /v1/models，拉不到就用推荐模型名。</p>
+      <label>Base URL</label>
+      <input value={base} onChange={(event) => setBase(event.target.value)} />
+      <label>密钥（一行一把）</label>
+      <textarea value={key} onChange={(event) => setKey(event.target.value)} placeholder="sk-..." />
+      <div className="row">
+        <button className="btn" type="button" onClick={() => void apiPost<{ note?: string }>("/api/settings/relay", { base_url: base, api_key: key, fetch_models: false }).then((body) => onDone(body.note || "已填好三条接口")).catch((err: Error) => setError(err.message))}>填入三条接口</button>
+      </div>
+      {error ? <p className="error">{error}</p> : null}
+    </section>
   );
 }
 
@@ -146,8 +168,8 @@ function SlotCard({
       </select>
       <label>Base URL</label>
       <input value={slot.base_url} onChange={(event) => onChange(slot.category, { base_url: event.target.value })} placeholder="https://api.deepseek.com/v1" />
-      <label>API Key {slot.api_key_set ? `（已保存 ${slot.api_key_mask}${slot.key_source === "env" ? "，来自环境变量" : ""}）` : "（未设置）"}</label>
-      <input value={secret} type="password" autoComplete="off" placeholder={slot.api_key_set ? "留空则保留原密钥" : "sk-..."} onChange={(event) => onSecret(event.target.value)} />
+      <label>API Key {slot.api_key_set ? `（已保存 ${slot.api_key_count || 1} 把，${slot.api_key_mask}）` : "（未设置）"}</label>
+      <textarea value={secret} placeholder={slot.api_key_set ? "留空则保留原密钥，一行一把" : "sk-...\nsk-..."} onChange={(event) => onSecret(event.target.value)} />
       <label>模型名</label>
       <input value={slot.model} onChange={(event) => onChange(slot.category, { model: event.target.value })} placeholder="deepseek-chat" />
       <label>额外参数 JSON</label>

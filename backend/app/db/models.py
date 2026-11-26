@@ -130,6 +130,8 @@ class Shot(Base):
     stage_status: Mapped[dict] = mapped_column(JSON, default=dict)
     qc_attempts: Mapped[int] = mapped_column(Integer, default=0)
     seed: Mapped[int] = mapped_column(Integer, default=0)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    quality: Mapped[str] = mapped_column(String(16), default="final")
 
 
 class Job(Base):
@@ -228,6 +230,45 @@ class AgentEvent(Base):
     status: Mapped[str] = mapped_column(String(32), default="info")
     job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Asset(Base):
+    __tablename__ = "assets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="character")
+    name: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="ready")
+    source_id: Mapped[str] = mapped_column(String(32), default="")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AssetVersion(Base):
+    __tablename__ = "asset_versions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    asset_id: Mapped[str] = mapped_column(String(32), index=True)
+    number: Mapped[int] = mapped_column(Integer, default=1)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ShotAsset(Base):
+    __tablename__ = "shot_assets"
+    __table_args__ = (UniqueConstraint("shot_id", "asset_id", name="uq_shot_asset"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    shot_id: Mapped[str] = mapped_column(String(32), index=True)
+    asset_id: Mapped[str] = mapped_column(String(32), index=True)
 
 
 class User(Base):

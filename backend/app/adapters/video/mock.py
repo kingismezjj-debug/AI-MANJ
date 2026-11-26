@@ -8,7 +8,14 @@ from app.media.ffmpeg_tools import still_to_mp4
 class MockVideo:
     provider = "mock"
 
-    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model) -> MediaResult:
+    capabilities = {
+        "max_reference_images": 8,
+        "first_last_frame": True,
+        "multi_shot": True,
+        "max_duration_sec": 30,
+    }
+
+    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None) -> MediaResult:
         with tempfile.TemporaryDirectory(prefix="zc-vid-") as folder:
             root = Path(folder)
             frame = root / "frame.png"

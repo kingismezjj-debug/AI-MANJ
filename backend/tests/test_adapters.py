@@ -53,8 +53,8 @@ def test_seedance_polls_and_downloads(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             body = __import__("json").loads(request.content)
-            assert body["ratio"] == "adaptive"
-            assert body["content"][1]["role"] == "first_frame"
+            assert body["ratio"] == "9:16"
+            assert body["content"][1]["role"] == "reference_image"
             assert body["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
             return httpx.Response(200, json={"id": "task-1"})
         if request.url.path.endswith("/tasks/task-1"):

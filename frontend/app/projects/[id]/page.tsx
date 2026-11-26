@@ -80,6 +80,9 @@ export default function BoardPage() {
           </p>
         </div>
         <div className="links">
+          <a href={`/projects/${params.id}/book`}>故事圣经</a>
+          <a href={`/projects/${params.id}/script`}>剧本</a>
+          <a href={`/projects/${params.id}/assets`}>资产</a>
           <a href={`/projects/${params.id}/agents`}>Agent 协作</a>
           <a href={`/projects/${params.id}/bible`}>角色定妆</a>
           <a href={`/projects/${params.id}/watch`}>成片与费用</a>

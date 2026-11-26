@@ -139,9 +139,13 @@ def forecast_from_counts(
     )
     selected = providers_of(provider_config)
     lines = estimate_lines(selected, units)
+    total = round(sum(line["usd"] for line in lines), 6)
+    video = round(sum(line["usd"] for line in lines if line["stage"] == "视频"), 6)
     return {
         "lines": lines,
-        "total_usd": round(sum(line["usd"] for line in lines), 6),
+        "total_usd": total,
+        "final_usd": total,
+        "draft_usd": round(total - video * 0.55, 6),
         "reference_usd": estimate_usd(REFERENCE_STACK, units),
         "preliminary": preliminary,
         "assumption": assumption,

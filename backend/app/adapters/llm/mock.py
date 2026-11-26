@@ -182,6 +182,59 @@ class MockLLM:
     def complete(self, *, messages, model, temperature, json_mode) -> LLMResult:
         blob = "\n".join(message.get("content", "") for message in messages)
         novel = _novel_from_prompt(blob)
+        if "TASK:BIBLE_MAP" in blob:
+            payload = {"notes": (novel or blob)[:80], "characters": [], "places": []}
+            text = json.dumps(payload, ensure_ascii=False)
+            usage = Usage(input_tokens=max(1, len(blob) // 4), output_tokens=20)
+            return LLMResult(text=text, usage=usage, provider=self.provider, model=model or "mock-bible")
+        if "TASK:BIBLE_REDUCE" in blob:
+            payload = {
+                "title": "长篇",
+                "summary": "分章故事",
+                "genre": "连载",
+                "tone": "克制",
+                "characters": [{"name": "主角", "notes": "阶段外形会变"}],
+                "bible": {
+                    "characters": [{"name": "主角", "phases": ["开篇", "中段", "结局"]}],
+                    "world": "连载世界",
+                    "timeline": ["开篇", "中段", "结局"],
+                    "phases": ["开篇", "中段", "结局"],
+                },
+            }
+            text = json.dumps(payload, ensure_ascii=False)
+            usage = Usage(input_tokens=30, output_tokens=40)
+            return LLMResult(text=text, usage=usage, provider=self.provider, model=model or "mock-bible")
+        if "TASK:OUTLINE" in blob:
+            count = _int_flag(blob, "EPISODE_COUNT", 3)
+            chapters = max(1, blob.count("heads") and min(count, 3))
+            # Prefer the chapter_count field when the caller sent one.
+            found = re.search(r'"chapter_count":\s*(\d+)', blob)
+            chapter_count = int(found.group(1)) if found else 1
+            n = max(1, min(count, chapter_count))
+            payload = {
+                "episodes": [
+                    {"number": index, "title": f"第{index}集", "synopsis": f"第{index}章", "chapter_index": index - 1}
+                    for index in range(1, n + 1)
+                ]
+            }
+            text = json.dumps(payload, ensure_ascii=False)
+            usage = Usage(input_tokens=20, output_tokens=20)
+            return LLMResult(text=text, usage=usage, provider=self.provider, model=model or "mock-outline")
+        if "TASK:EPISODE" in blob:
+            number = _int_flag(blob, "EPISODE_NUMBER", 1)
+            shots = _int_flag(blob, "MAX_SHOTS", 4)
+            payload = screenplay_from_novel(novel, max_shots=shots, max_episodes=1)
+            if payload["episodes"]:
+                payload["episodes"][0]["number"] = number
+                payload["episodes"][0]["title"] = f"第{number}集"
+            text = json.dumps(payload, ensure_ascii=False)
+            usage = Usage(input_tokens=max(1, len(blob) // 2), output_tokens=max(1, len(text) // 2))
+            return LLMResult(text=text, usage=usage, provider=self.provider, model=model or "mock-episode")
+        if "TASK:REWRITE" in blob:
+            source = novel or ""
+            text = json.dumps({"text": f"改：{source[:400]}"}, ensure_ascii=False)
+            usage = Usage(input_tokens=10, output_tokens=10)
+            return LLMResult(text=text, usage=usage, provider=self.provider, model=model or "mock-rewrite")
         if "TASK:DIRECTOR" in blob:
             payload = {
                 "summary": (novel or "测试")[:80],

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.auth import resolve_user
 from app.api.routes import router
+from app.api.studio import router as studio_router
 from app.bootstrap import init_database, init_storage
 from app.config import get_settings
 from app.db.session import SessionLocal
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router)
+    app.include_router(studio_router)
     return app
 
 

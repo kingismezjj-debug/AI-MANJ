@@ -37,6 +37,10 @@ class ProjectCreate(BaseModel):
     provider_config: dict | None = None
     require_bible_approval: bool = False
     require_script_approval: bool = False
+    episode_count: int | None = None
+    produce_first: int | None = None
+    draft_mode: bool = False
+    merge_shots: bool = False
 
 
 class EstimateRequest(BaseModel):
@@ -165,16 +169,25 @@ def list_projects(request: Request, db: Session = Depends(get_db)):
 @router.post("/projects")
 def create_project(body: ProjectCreate, request: Request, db: Session = Depends(get_db)):
     config = body.provider_config or preset_config(body.preset)
+    settings = default_settings(
+        require_bible_approval=body.require_bible_approval,
+        require_script_approval=body.require_script_approval,
+    )
+    if body.episode_count:
+        settings["episode_count"] = body.episode_count
+    if body.produce_first:
+        settings["produce_first"] = body.produce_first
+    if body.draft_mode:
+        settings["draft_mode"] = True
+    if body.merge_shots:
+        settings["merge_shots"] = True
     project = Project(
         title=body.title.strip() or "未命名项目",
         status="draft",
         phase="draft",
         user_id=_user(request, db).id,
         provider_config=config,
-        settings=default_settings(
-            require_bible_approval=body.require_bible_approval,
-            require_script_approval=body.require_script_approval,
-        ),
+        settings=settings,
     )
     db.add(project)
     db.commit()

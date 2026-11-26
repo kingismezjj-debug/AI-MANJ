@@ -35,7 +35,7 @@ class SeedanceVideo:
         self.client = client or httpx.Client(timeout=120)
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
-        self.include_references = False
+        self.include_references = True
 
     def apply_route(self, route: dict) -> None:
         if route.get("api_key"):
@@ -54,16 +54,30 @@ class SeedanceVideo:
             self.poll_timeout = float(params["poll_timeout"])
         return self
 
-    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model) -> MediaResult:
+    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None) -> MediaResult:
         if not self.api_key:
             raise ProviderNotConfigured("ARK_API_KEY is empty")
+        from app.adapters.capabilities import clamp_video_request
+
         chosen = model or self.default_model
-        duration = max(4, min(12, int(round(float(duration_sec) or 5))))
+        clamped = clamp_video_request(
+            "seedance",
+            references=reference_images,
+            last_image=last_image,
+            duration_sec=duration_sec,
+            merged=float(duration_sec or 0) > 12,
+        )
+        self.notice = clamped["notice"]
+        duration = max(4, min(int(clamped["duration_sec"]), 30))
+        reference_images = clamped["references"]
+        last_image = clamped["last_image"]
         content: list[dict] = [{"type": "text", "text": prompt[:500]}]
         if self.include_references:
             content.append({"type": "image_url", "image_url": {"url": _data_uri(image)}, "role": "reference_image"})
-            for ref in (reference_images or [])[:4]:
+            for ref in reference_images or []:
                 content.append({"type": "image_url", "image_url": {"url": _data_uri(ref)}, "role": "reference_image"})
+            if last_image:
+                content.append({"type": "image_url", "image_url": {"url": _data_uri(last_image)}, "role": "last_frame"})
             ratio = "9:16" if height >= width else "16:9"
         else:
             content.append({"type": "image_url", "image_url": {"url": _data_uri(image)}, "role": "first_frame"})

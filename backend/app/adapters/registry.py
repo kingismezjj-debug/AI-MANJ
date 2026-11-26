@@ -17,6 +17,7 @@ from app.adapters.tts.elevenlabs import ElevenLabsTTS
 from app.adapters.tts.minimax import MiniMaxTTS
 from app.adapters.tts.mock import MockTTS
 from app.adapters.video.http_poll import HttpPollVideo
+from app.adapters.video.openai_compatible import OpenAICompatibleVideo
 from app.adapters.video.kling import KlingVideo
 from app.adapters.video.mock import MockVideo
 from app.adapters.video.seedance import SeedanceVideo
@@ -67,6 +68,12 @@ def default_settings(*, require_bible_approval: bool = False, require_script_app
         "max_qc_retries": 1,
         "max_episodes": 2,
         "max_shots_per_episode": 6,
+        "episode_count": 60,
+        "produce_first": 2,
+        "shots_per_episode": 6,
+        "draft_mode": False,
+        "merge_shots": False,
+        "require_grid_confirm": False,
         "fallback_to_mock": True,
         "show_ai_label": True,
     }
@@ -82,6 +89,7 @@ BUILDERS = {
     ("video", "seedance"): lambda: SeedanceVideo(),
     ("video", "kling"): lambda: KlingVideo(),
     ("video", "http_poll"): lambda: HttpPollVideo(),
+    ("video", "openai_compatible"): lambda: OpenAICompatibleVideo(),
     ("tts", "mock"): lambda: MockTTS(),
     ("tts", "minimax"): lambda: MiniMaxTTS(),
     ("tts", "elevenlabs"): lambda: ElevenLabsTTS(),

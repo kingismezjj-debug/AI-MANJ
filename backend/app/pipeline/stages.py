@@ -17,7 +17,7 @@ from app.media.ffmpeg_tools import burn_ass, concat_videos, duration_of, has_str
 from app.media.fonts import find_cjk_font
 from app.media.images import STYLE_SUFFIX, fit_png
 from app.media.subtitles import build_ass
-from app.novel.parse import chunk_text
+from app.novel.chapters import llm_parts, split_chapters
 from app.pipeline.artifacts import latest_artifact, materialize, save_bytes, temp_workspace
 from app.pipeline.agents import AGENT_FOR_STAGE, record
 from app.pipeline.graph import build_graph, ensure_screen_job, schedule_video_regen
@@ -28,6 +28,7 @@ from app.pipeline.names import (
     CHARACTER_BIBLE,
     CHARACTER_LOCK,
     DIRECTOR,
+    EPISODE_SCRIPT,
     INGEST,
     LIPSYNC,
     SCRIPT_LOCK,
@@ -107,19 +108,33 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
     if not (novel.text or "").strip():
         raise RuntimeError("novel text is empty")
     db.query(Chunk).filter(Chunk.novel_id == novel.id).delete()
-    pieces = chunk_text(novel.text)
+    pieces = llm_parts(novel.text)
     for index, piece in enumerate(pieces):
         db.add(Chunk(novel_id=novel.id, idx=index, text=piece))
     db.flush()
-    result = _router(db, project, job).llm(
-        [
-            {"role": "system", "content": ANALYSIS_SYSTEM},
-            {"role": "user", "content": f"<<<NOVEL\n{novel.text[:12000]}\n>>>"},
-        ],
-        json_mode=True,
-        temperature=0.3,
-    )
-    novel.analysis = extract_json(result.text)
+    router = _router(db, project, job)
+    if len(pieces) == 1:
+        result = router.llm(
+            [
+                {"role": "system", "content": ANALYSIS_SYSTEM},
+                {"role": "user", "content": f"<<<NOVEL\n{pieces[0]}\n>>>"},
+            ],
+            json_mode=True,
+            temperature=0.3,
+        )
+        from app.pipeline.longform import bible_from_analysis
+
+        payload = extract_json(result.text)
+        payload["bible"] = bible_from_analysis(payload)
+        novel.analysis = payload
+    else:
+        from app.pipeline.longform import bible_from_analysis, map_chapter, reduce_bible
+
+        notes = [map_chapter(router, piece, index) for index, piece in enumerate(pieces)]
+        novel.analysis = reduce_bible(router, notes)
+        novel.analysis.setdefault("bible", bible_from_analysis(novel.analysis))
+        novel.analysis.setdefault("title", project.title)
+        novel.analysis.setdefault("summary", (novel.analysis.get("bible") or {}).get("world") or "")
     from app.pipeline.graph import ensure_director_job
 
     ensure_director_job(db, project.id, job.id)
@@ -127,11 +142,7 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
 
 
 def _novel_for_writer(novel: Novel, db: Session) -> str:
-    if len(novel.text) <= 12000:
-        return novel.text
-    chunks = db.query(Chunk).filter(Chunk.novel_id == novel.id).order_by(Chunk.idx).all()
-    heads = "\n".join(chunk.text[:180] for chunk in chunks[:40])
-    return f"【分段摘录】\n{heads}\n【开篇】\n{novel.text[:4000]}"
+    return novel.text
 
 
 def _complete_screenplay(router: ModelRouter, project: Project, novel_text: str, analysis: dict):
@@ -232,6 +243,7 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
                         character_names=names,
                         stage_status={},
                         seed=stable_seed(project.id, str(running_number), shot_spec.description[:40]),
+                        quality="draft" if (project.settings or {}).get("draft_mode") else "final",
                     )
                 )
                 running_number += 1
@@ -244,13 +256,19 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
 
 def run_director(db: Session, job: Job, project: Project) -> dict:
     novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    if len(novel.text) <= 8000:
+        source = novel.text
+    else:
+        chapters = split_chapters(novel.text)
+        bible = (novel.analysis or {}).get("bible") or {}
+        source = json.dumps(bible, ensure_ascii=False) + "\n" + chapters[-1][:2000]
     result = _router(db, project, job).llm(
         [
             {
                 "role": "system",
                 "content": "TASK:DIRECTOR\n你是漫剧总控。阅读小说，决定集数和镜头规模，并列出要派发的工种。只输出 JSON。",
             },
-            {"role": "user", "content": f"<<<NOVEL\n{novel.text[:8000]}\n>>>"},
+            {"role": "user", "content": f"<<<NOVEL\n{source}\n>>>"},
         ],
         json_mode=True,
         temperature=0.4,
@@ -277,6 +295,8 @@ def run_director(db: Session, job: Job, project: Project) -> dict:
 
 def run_screenwrite(db: Session, job: Job, project: Project) -> dict:
     novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    if len(split_chapters(novel.text)) > 1:
+        return _write_series(db, job, project, novel)
     screenplay = _complete_screenplay(_router(db, project, job), project, _novel_for_writer(novel, db), novel.analysis or {})
     screenplay = clamp_screenplay(screenplay, project.settings or {})
     shot_total = sum(len(scene.shots) for episode in screenplay.episodes for scene in episode.scenes)
@@ -297,7 +317,82 @@ def run_screenwrite(db: Session, job: Job, project: Project) -> dict:
         meta=summary,
     )
     build_graph(db, project.id, job.id)
+    from app.pipeline.assets import bind_project_cards
+
+    bind_project_cards(db, project.id)
     return summary
+
+
+def _write_series(db: Session, job: Job, project: Project, novel: Novel) -> dict:
+    from app.pipeline.assets import bind_project_cards
+    from app.pipeline.longform import build_outline, queue_remaining_scripts, script_chapter
+    from app.pipeline.schema import Screenplay
+
+    chapters = split_chapters(novel.text)
+    settings = project.settings or {}
+    count = int(settings.get("episode_count") or 60)
+    first = int(settings.get("produce_first") or 2)
+    shots_per = int(settings.get("shots_per_episode") or settings.get("max_shots_per_episode") or 6)
+    bible = (novel.analysis or {}).get("bible") or {}
+    router = _router(db, project, job)
+    outline = build_outline(router, bible, chapters, count, shots_per)
+    if not outline:
+        outline = [
+            {"number": index + 1, "title": f"第{index + 1}集", "synopsis": chapter[:80], "chapter_index": index}
+            for index, chapter in enumerate(chapters[:count])
+        ]
+    first = max(1, min(first, len(outline)))
+    scripted = []
+    characters = []
+    locations = []
+    for item in outline[:first]:
+        index = int(item.get("chapter_index") or (int(item["number"]) - 1))
+        index = max(0, min(index, len(chapters) - 1))
+        piece = script_chapter(router, project, chapters[index], bible, int(item["number"]), shots_per)
+        scripted.extend(piece.episodes)
+        if not characters:
+            characters = piece.characters
+            locations = piece.locations
+    screenplay = Screenplay(
+        title=(novel.analysis or {}).get("title") or project.title,
+        characters=characters,
+        locations=locations,
+        episodes=scripted,
+    )
+    summary = _persist_screenplay(db, project, screenplay)
+    for item in outline[first:]:
+        db.add(
+            Episode(
+                project_id=project.id,
+                number=int(item["number"]),
+                title=item.get("title") or f"第{item['number']}集",
+                synopsis=item.get("synopsis") or "",
+                status="outlined",
+            )
+        )
+    db.flush()
+    build_graph(db, project.id, job.id)
+    queue_remaining_scripts(db, project.id, job.id)
+    bind_project_cards(db, project.id)
+    summary["outlined"] = len(outline) - first
+    return summary
+
+
+def run_episode_script(db: Session, job: Job, project: Project) -> dict:
+    from app.pipeline.assets import bind_project_cards
+    from app.pipeline.longform import append_episode, extend_graph, script_chapter
+
+    episode = db.get(Episode, job.entity_id)
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one()
+    chapters = split_chapters(novel.text)
+    index = max(0, min(episode.number - 1, len(chapters) - 1))
+    shots_per = int((project.settings or {}).get("shots_per_episode") or 6)
+    bible = (novel.analysis or {}).get("bible") or {}
+    screenplay = script_chapter(_router(db, project, job), project, chapters[index], bible, episode.number, shots_per)
+    append_episode(db, project, screenplay)
+    extend_graph(db, project.id, episode.id)
+    bind_project_cards(db, project.id)
+    return {"episode": episode.number}
 
 
 def run_script_lock(db: Session, job: Job, project: Project) -> dict:
@@ -501,6 +596,9 @@ def run_voice(db: Session, job: Job, project: Project) -> dict:
 
 
 def run_video(db: Session, job: Job, project: Project) -> dict:
+    settings = project.settings or {}
+    if settings.get("require_grid_confirm") and not settings.get("grid_confirmed"):
+        raise HoldForApproval("先确认分镜格", kind="grid")
     shot = db.get(Shot, job.entity_id)
     store = _store()
     frame = latest_artifact(db, shot.id, "keyframe")
@@ -508,15 +606,47 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
         raise RuntimeError("keyframe missing")
     refs = _refs_for_shot(db, store, shot)
     apply_shot_prompt(db, shot)
+    prompt = shot.video_prompt or shot.visual_prompt or shot.description
+    duration = shot.duration_sec
+    width, height = project.width, project.height
+    if settings.get("draft_mode") and (shot.quality or "final") != "final":
+        width, height = 480, 854
+    if settings.get("merge_shots"):
+        from app.pipeline.longform import lead_of, timestamped_prompt
+
+        grouped = lead_of(db, shot)
+        if grouped is not None:
+            head, group = grouped
+            if head.id != shot.id:
+                shared = latest_artifact(db, head.id, "video")
+                if shared is not None:
+                    data = store.get(shared.storage_key)
+                    artifact = save_bytes(
+                        db,
+                        store,
+                        project_id=project.id,
+                        entity_type="shot",
+                        entity_id=shot.id,
+                        kind="video",
+                        data=data,
+                        content_type="video/mp4",
+                        job_id=job.id,
+                        meta={"merged_into": head.id, "provider": "merged"},
+                    )
+                    mark_shot(shot, VIDEO, "succeeded")
+                    return {"artifact_id": artifact.id, "merged_into": head.id}
+            prompt = timestamped_prompt(group)
+            duration = sum(float(item.duration_sec or 2.5) for item in group)
     result = _router(db, project, job).video(
-        prompt=shot.video_prompt or shot.visual_prompt or shot.description,
+        prompt=prompt,
         image=store.get(frame.storage_key),
         reference_images=refs,
-        duration_sec=shot.duration_sec,
+        duration_sec=duration,
         seed=shot.seed,
         aspect_ratio=project.aspect_ratio,
-        width=project.width,
-        height=project.height,
+        width=width,
+        height=height,
+        last_image=None,
     )
     artifact = save_bytes(
         db,
@@ -822,6 +952,7 @@ HANDLERS = {
     INGEST: run_ingest,
     DIRECTOR: run_director,
     SCREENWRITE: run_screenwrite,
+    EPISODE_SCRIPT: run_episode_script,
     SCRIPT_LOCK: run_script_lock,
     CHARACTER_BIBLE: run_character_bible,
     LOCATION_BIBLE: run_location_bible,

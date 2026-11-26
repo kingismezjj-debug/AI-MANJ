@@ -57,7 +57,11 @@ class KlingVideo:
             self.poll_timeout = float(params["poll_timeout"])
         return self
 
-    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model) -> MediaResult:
+    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None) -> MediaResult:
+        from app.adapters.capabilities import clamp_video_request
+
+        clamped = clamp_video_request("kling", references=reference_images, last_image=last_image, duration_sec=duration_sec, merged=False)
+        self.notice = clamped["notice"]
         chosen = model or self.default_model
         duration = "5" if float(duration_sec) <= 5 else "10"
         body = {

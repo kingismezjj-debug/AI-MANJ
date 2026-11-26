@@ -36,7 +36,7 @@ class HttpPollVideo:
             raise ProviderNotConfigured("http_poll requires create_url and poll_url")
         return self
 
-    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model) -> MediaResult:
+    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None) -> MediaResult:
         import base64
 
         ctx = {

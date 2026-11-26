@@ -12,7 +12,7 @@ export default function HomePage() {
   const [preset, setPreset] = useState("mock");
   const [approval, setApproval] = useState(false);
   const [scriptGate, setScriptGate] = useState(false);
-  const [quote, setQuote] = useState<{ total_usd: number; reference_usd: number; assumption: string; lines: { stage: string; provider: string; detail: string; usd: number }[] } | null>(null);
+  const [quote, setQuote] = useState<{ total_usd: number; draft_usd?: number; final_usd?: number; reference_usd: number; assumption: string; lines: { stage: string; provider: string; detail: string; usd: number }[] } | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -109,7 +109,7 @@ export default function HomePage() {
           </label>
           {quote ? (
             <div className="quote">
-              <p className="meta">开拍前报价 {money(quote.total_usd)} · 商用参考 {money(quote.reference_usd)}</p>
+              <p className="meta">成片报价 {money(quote.final_usd ?? quote.total_usd)} · 低清样片 {money(quote.draft_usd ?? quote.total_usd)} · 商用参考 {money(quote.reference_usd)}</p>
               <ul>
                 {quote.lines.map((line) => (
                   <li key={line.stage}>

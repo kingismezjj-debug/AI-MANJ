@@ -153,7 +153,9 @@ def public_slot(row: ApiSlot | None, category: str) -> dict:
         "params": (row.params if row else None) or {},
         "enabled": True if row is None else bool(row.enabled),
         "api_key_set": key_present,
-        "api_key_mask": mask_key(stored or env_key),
+        "api_key_mask": mask_key((stored or env_key).splitlines()[0].strip()) if (stored or env_key) else "",
+        "api_key_masks": [mask_key(part.strip()) for part in (stored or env_key).replace(",", "\n").splitlines() if part.strip()],
+        "api_key_count": len([part for part in (stored or env_key).replace(",", "\n").splitlines() if part.strip()]),
         "key_source": "database" if stored else ("env" if env_key else ""),
         "providers": PROVIDER_OPTIONS[category],
     }
@@ -256,6 +258,52 @@ def effective_slot(db, project, category: str) -> dict:
         slot["provider"] = "mock"
         slot["model"] = "mock-video"
     return slot
+
+
+def choose_models(names: list[str] | None) -> dict:
+    names = names or []
+
+    def pick(hints: tuple[str, ...], fallback: str) -> str:
+        for name in names:
+            lowered = name.lower()
+            if any(hint in lowered for hint in hints):
+                return name
+        return fallback
+
+    return {
+        "llm": pick(("deepseek", "gpt", "chat", "reasoner", "claude"), "deepseek-chat"),
+        "image": pick(("seedream", "image", "dall", "flux", "sd"), "seedream"),
+        "video": pick(("seedance", "video", "kling", "sora"), "seedance"),
+    }
+
+
+def apply_relay(db, base_url: str, api_key: str, models: list[str] | None = None) -> dict:
+    """One relay base URL and key fills the brain, image, and video slots."""
+    base = normalize_openai_base(base_url)
+    picked = choose_models(models)
+    slots = [
+        {"category": "llm", "provider": "openai_compatible", "base_url": base, "model": picked["llm"], "api_key": api_key, "params": {}, "enabled": True},
+        {"category": "image", "provider": "openai_compatible", "base_url": base, "model": picked["image"], "api_key": api_key, "params": {}, "enabled": True},
+        {"category": "video", "provider": "openai_compatible", "base_url": base, "model": picked["video"], "api_key": api_key, "params": {}, "enabled": True},
+    ]
+    return save_slots(db, slots)
+
+
+def fetch_model_ids(base_url: str, api_key: str) -> list[str]:
+    import httpx
+
+    url = normalize_openai_base(base_url) + "/models"
+    response = httpx.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=12)
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("data") or payload.get("models") or []
+    names = []
+    for row in rows:
+        if isinstance(row, str):
+            names.append(row)
+        elif isinstance(row, dict):
+            names.append(str(row.get("id") or row.get("name") or ""))
+    return [name for name in names if name]
 
 
 def normalize_openai_base(url: str) -> str:
