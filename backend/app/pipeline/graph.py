@@ -115,6 +115,8 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
     for episode in episodes:
         episode_shots = [shot for shot in shots if shot.episode_id == episode.id]
         episode_shots.sort(key=lambda shot: shot.number)
+        if not episode_shots:
+            continue
         qc_ids: list[str] = []
         for shot in episode_shots:
             storyboard = create_job(

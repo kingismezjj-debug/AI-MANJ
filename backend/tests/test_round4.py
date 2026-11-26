@@ -63,6 +63,10 @@ def test_chapters_stream_the_next_episode(db):
     assert all(screen.id in (job.depends_on or []) for job in script)
     video_ids = {job.id for job in db.query(Job).filter(Job.project_id == project.id, Job.stage == "video").all()}
     assert video_ids.isdisjoint(set(script[0].depends_on or []))
+    outlined = [episode for episode in episodes if episode.status == "outlined"]
+    for episode in outlined:
+        assemble = db.query(Job).filter(Job.entity_id == episode.id, Job.stage == "assemble_episode").one_or_none()
+        assert assemble is None
 
 
 def test_relay_fills_three_slots_and_masks(client):

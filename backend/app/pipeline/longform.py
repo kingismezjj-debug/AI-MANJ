@@ -367,6 +367,13 @@ def extend_graph(db, project_id: str, episode_id: str) -> None:
         depends_on=qc_ids + [music.id],
         key=f"assemble_episode:{episode_id}",
     )
+    wanted = qc_ids + [music.id]
+    if list(assemble.depends_on or []) != wanted:
+        assemble.depends_on = wanted
+        if assemble.status in {"failed", "succeeded"}:
+            assemble.status = "blocked"
+            assemble.enqueued = False
+            assemble.error = None
     final = (
         db.query(Job).filter(Job.project_id == project_id, Job.stage == ASSEMBLE_FINAL).one_or_none()
     )
