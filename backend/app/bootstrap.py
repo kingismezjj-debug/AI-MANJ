@@ -40,7 +40,7 @@ def _ensure_columns() -> None:
             "video_prompt": "TEXT",
             "dialogue_timing": "TEXT",
             "revision": "INTEGER DEFAULT 0",
-            "stale": "INTEGER DEFAULT 0",
+            "stale": "BOOLEAN DEFAULT FALSE",
             "quality": "VARCHAR(16) DEFAULT 'final'",
         },
         "model_calls": {"request_summary": "TEXT DEFAULT ''"},
@@ -55,6 +55,12 @@ def _ensure_columns() -> None:
             for name, ddl in columns.items():
                 if name not in present:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+        if engine.dialect.name == "postgresql" and "shots" in existing:
+            stale = next((column for column in inspector.get_columns("shots") if column["name"] == "stale"), None)
+            if stale is not None and "INT" in str(stale["type"]).upper():
+                conn.execute(text("ALTER TABLE shots ALTER COLUMN stale DROP DEFAULT"))
+                conn.execute(text("ALTER TABLE shots ALTER COLUMN stale TYPE BOOLEAN USING CASE WHEN stale = 0 THEN FALSE ELSE TRUE END"))
+                conn.execute(text("ALTER TABLE shots ALTER COLUMN stale SET DEFAULT FALSE"))
 
 
 def _ensure_users() -> None:

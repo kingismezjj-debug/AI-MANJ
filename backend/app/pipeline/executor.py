@@ -59,7 +59,11 @@ def execute_job(job_id: str) -> None:
             return
         except Exception as exc:
             logger.exception("job %s failed", job_id)
-            _fail_or_retry(db, job, project, exc)
+            db.rollback()
+            job = db.get(Job, job_id)
+            project = db.get(Project, job.project_id) if job is not None else None
+            if job is not None:
+                _fail_or_retry(db, job, project, exc)
             return
         job.status = "succeeded"
         job.result = result or {}
