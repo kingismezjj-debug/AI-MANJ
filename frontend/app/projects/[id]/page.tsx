@@ -2,8 +2,70 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { API_BASE, apiGet, apiPost, getKey, mediaUrl } from "@/lib/api";
+import { API_BASE, apiGet, apiPost, apiPut, getKey, mediaUrl } from "@/lib/api";
 import { SHOT_STAGES, money, statusLabel, type Board } from "@/lib/types";
+
+function TrialPlan({ id, status, onDone }: { id: string; status: string; onDone: () => void }) {
+  const [plan, setPlan] = useState<{ chapter_count: number; suggested: number; episodes: number; trial: number; full_read: boolean; cost?: { actual_usd: number; rest_usd: number; remaining_episodes: number; done_episodes: number } } | null>(null);
+  const [mode, setMode] = useState("auto");
+  const [count, setCount] = useState("60");
+  const [trial, setTrial] = useState("2");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [full, setFull] = useState(false);
+  const [error, setError] = useState("");
+
+  function load() {
+    apiGet<NonNullable<typeof plan>>(`/api/projects/${id}/plan`).then((body) => {
+      setPlan(body);
+      setMode(body.episodes && body.suggested !== body.episodes ? "fixed" : "auto");
+      setCount(String(body.episodes || 60));
+      setTrial(String(body.trial || 2));
+      setFull(body.full_read);
+    }).catch((err: Error) => setError(err.message));
+  }
+
+  useEffect(() => { load(); }, [id, status]);
+  if (!plan) return null;
+  const payload = { episode_mode: mode, episode_count: Number(count) || 60, produce_first: Number(trial) || 2, chapter_from: from ? Number(from) : undefined, chapter_to: to ? Number(to) : undefined, full_read: full };
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }}>
+      <h3>{status === "trial_done" ? "试做完成" : "集数和章节"}</h3>
+      <p className="meta">全书 {plan.chapter_count} 章，自动建议 {plan.suggested} 集。当前计划 {plan.episodes} 集，先做 {plan.trial} 集。全书补读默认关闭。</p>
+      {plan.cost ? <p className="meta">已花费 {money(plan.cost.actual_usd)} · 已做 {plan.cost.done_episodes} 集 · 剩下 {plan.cost.remaining_episodes} 集约 {money(plan.cost.rest_usd)}</p> : null}
+      <label>集数</label>
+      <select value={mode === "auto" ? "auto" : count} onChange={(event) => { if (event.target.value === "auto") setMode("auto"); else { setMode("fixed"); setCount(event.target.value); } }}>
+        <option value="auto">按章节自动建议</option>
+        <option value="20">20 集</option>
+        <option value="40">40 集</option>
+        <option value="60">60 集</option>
+        <option value="80">80 集</option>
+      </select>
+      <label>再试做</label>
+      <select value={trial} onChange={(event) => setTrial(event.target.value)}>
+        <option value="1">1 集</option>
+        <option value="2">2 集</option>
+        <option value="3">3 集</option>
+      </select>
+      <div className="row">
+        <input value={from} placeholder="起始章" onChange={(event) => setFrom(event.target.value)} />
+        <input value={to} placeholder="结束章" onChange={(event) => setTo(event.target.value)} />
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={full} onChange={(event) => setFull(event.target.checked)} />
+        补读选定范围内的全部章节（会计费，试做时默认关）
+      </label>
+      <div className="row">
+        <button className="btn secondary" type="button" onClick={() => void apiPut(`/api/projects/${id}/plan`, payload).then(load).then(onDone).catch((err: Error) => setError(err.message))}>调整设置</button>
+        <button className="btn" type="button" onClick={() => void apiPost(`/api/projects/${id}/continue`, { mode: "next", count: Number(trial) || 1 }).then(onDone)}>继续做下 {trial} 集</button>
+        <button className="btn secondary" type="button" onClick={() => void apiPost(`/api/projects/${id}/continue`, { mode: "all", count: 1 }).then(onDone)}>全部继续</button>
+        <button className="btn secondary" type="button" onClick={() => void apiPost(`/api/projects/${id}/continue`, { mode: "stop" }).then(onDone)}>停止</button>
+      </div>
+      {error ? <p className="error">{error}</p> : null}
+    </section>
+  );
+}
 
 function ShotRegen({ shotId, onDone }: { shotId: string; onDone: () => void }) {
   const [stage, setStage] = useState("shot");
@@ -116,6 +178,7 @@ export default function BoardPage() {
       <div className={`bar ${progress?.indeterminate ? "wait" : ""}`} aria-hidden>
         <div style={{ width: progress?.indeterminate ? "100%" : `${ratio}%` }} />
       </div>
+      <TrialPlan id={params.id} status={board.project.status} onDone={() => void refresh()} />
 
       {board.project.status === "awaiting_script" ? (
         <section className="panel">

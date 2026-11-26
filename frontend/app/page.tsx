@@ -12,6 +12,11 @@ export default function HomePage() {
   const [preset, setPreset] = useState("mock");
   const [approval, setApproval] = useState(false);
   const [scriptGate, setScriptGate] = useState(false);
+  const [episodeMode, setEpisodeMode] = useState("auto");
+  const [episodeCount, setEpisodeCount] = useState("60");
+  const [trialCount, setTrialCount] = useState("2");
+  const [chapterFrom, setChapterFrom] = useState("");
+  const [chapterTo, setChapterTo] = useState("");
   const [quote, setQuote] = useState<{ total_usd: number; draft_usd?: number; final_usd?: number; reference_usd: number; assumption: string; lines: { stage: string; provider: string; detail: string; usd: number }[] } | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState("");
@@ -37,6 +42,12 @@ export default function HomePage() {
         preset,
         require_bible_approval: approval,
         require_script_approval: scriptGate,
+        episode_mode: episodeMode,
+        episode_count: episodeMode === "fixed" ? Number(episodeCount) || 60 : undefined,
+        produce_first: Number(trialCount) || 2,
+        chapter_from: chapterFrom ? Number(chapterFrom) : undefined,
+        chapter_to: chapterTo ? Number(chapterTo) : undefined,
+        full_read: false,
       });
       if (useSample) {
         await apiPost(`/api/projects/${project.id}/novel/sample`);
@@ -88,6 +99,29 @@ export default function HomePage() {
             <option value="cn_stack">国内商用：Seedream / Seedance / MiniMax / 可灵</option>
             <option value="global_stack">海外：兼容图片 / Kling / ElevenLabs</option>
           </select>
+          <label htmlFor="episodes">集数</label>
+          <select id="episodes" value={episodeMode === "auto" ? "auto" : episodeCount} onChange={(event) => {
+            if (event.target.value === "auto") setEpisodeMode("auto");
+            else { setEpisodeMode("fixed"); setEpisodeCount(event.target.value); }
+          }}>
+            <option value="auto">按章节自动建议（最多 80 集）</option>
+            <option value="20">20 集</option>
+            <option value="40">40 集</option>
+            <option value="60">60 集</option>
+            <option value="80">80 集</option>
+            <option value="100">100 集</option>
+          </select>
+          <label htmlFor="trial">先试做</label>
+          <select id="trial" value={trialCount} onChange={(event) => setTrialCount(event.target.value)}>
+            <option value="1">1 集</option>
+            <option value="2">2 集</option>
+            <option value="3">3 集</option>
+          </select>
+          <label>改编章节范围（留空为全书）</label>
+          <div className="row">
+            <input value={chapterFrom} placeholder="起始章" onChange={(event) => setChapterFrom(event.target.value)} />
+            <input value={chapterTo} placeholder="结束章" onChange={(event) => setChapterTo(event.target.value)} />
+          </div>
           <label htmlFor="novel">小说文件</label>
           <input
             id="novel"

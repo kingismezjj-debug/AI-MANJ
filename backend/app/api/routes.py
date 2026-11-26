@@ -39,6 +39,10 @@ class ProjectCreate(BaseModel):
     require_script_approval: bool = False
     episode_count: int | None = None
     produce_first: int | None = None
+    episode_mode: str | None = None
+    chapter_from: int | None = None
+    chapter_to: int | None = None
+    full_read: bool = False
     draft_mode: bool = False
     merge_shots: bool = False
 
@@ -176,10 +180,17 @@ def create_project(body: ProjectCreate, request: Request, db: Session = Depends(
         require_bible_approval=body.require_bible_approval,
         require_script_approval=body.require_script_approval,
     )
+    if body.episode_mode:
+        settings["episode_mode"] = body.episode_mode
     if body.episode_count:
         settings["episode_count"] = body.episode_count
     if body.produce_first:
         settings["produce_first"] = body.produce_first
+    if body.chapter_from:
+        settings["chapter_from"] = body.chapter_from
+    if body.chapter_to:
+        settings["chapter_to"] = body.chapter_to
+    settings["full_read"] = bool(body.full_read)
     if body.draft_mode:
         settings["draft_mode"] = True
     if body.merge_shots:

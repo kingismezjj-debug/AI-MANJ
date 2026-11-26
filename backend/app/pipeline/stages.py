@@ -198,8 +198,16 @@ def _maybe_release_early(db: Session, project: Project, job: Job, segments: list
     chapters = split_chapters(novel.text)
     if len(chapters) < 2:
         return
-    first = max(1, int(settings.get("produce_first") or 2))
-    needed = {index for index, _part in segments if index < first}
+    from app.novel.chapters import group_chapters, resolved_plan, slice_chapters
+
+    chosen = slice_chapters(chapters, settings.get("chapter_from"), settings.get("chapter_to"))
+    if len(chosen) < 2:
+        return
+    plan = resolved_plan(len(chosen), settings)
+    groups = group_chapters(len(chosen), plan["episodes"])
+    trial = plan["trial"]
+    covered = groups[trial - 1][1] if groups else 0
+    needed = {index for index, _part in segments if index < covered}
     if not needed or any(notes[pos] is None for pos, (chapter, _part) in enumerate(segments) if chapter in needed):
         return
     shots_per = int(settings.get("shots_per_episode") or settings.get("max_shots_per_episode") or 6)
@@ -209,8 +217,9 @@ def _maybe_release_early(db: Session, project: Project, job: Job, segments: list
     scripted = []
     characters = []
     locations = []
-    for number in range(1, min(first, len(chapters)) + 1):
-        piece = script_chapter(router, project, chapters[number - 1], bible, number, shots_per)
+    for number, (start, end) in enumerate(groups[:trial], start=1):
+        source = "\n\n".join(chosen[start:end])[:24000]
+        piece = script_chapter(router, project, source, bible, number, shots_per)
         scripted.extend(piece.episodes)
         if not characters:
             characters = piece.characters
@@ -222,16 +231,19 @@ def _maybe_release_early(db: Session, project: Project, job: Job, segments: list
         episodes=scripted,
     )
     _persist_screenplay(db, project, screenplay)
-    for index, chapter in enumerate(chapters[first:], start=first + 1):
+    for number, (start, end) in enumerate(groups[trial:], start=trial + 1):
+        title = chosen[start].splitlines()[0][:40] if chosen else f"第{number}集"
         db.add(
             Episode(
                 project_id=project.id,
-                number=index,
-                title=f"第{index}集",
-                synopsis=chapter[:80],
+                number=number,
+                title=title,
+                synopsis=f"第{start + 1}-{end}章",
                 status="outlined",
             )
         )
+    settings["episode_count"] = plan["episodes"]
+    settings["produce_first"] = plan["trial"]
     db.flush()
     early = create_job(
         db,
@@ -261,7 +273,10 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
 
     size = int((project.settings or {}).get("chapter_chars") or get_settings().chapter_chars or 24000)
     db.query(Chunk).filter(Chunk.novel_id == novel.id).delete()
-    segments = llm_segments(novel.text, size=size)
+    from app.novel.chapters import slice_chapters as _slice
+
+    scoped = _slice(split_chapters(novel.text), (project.settings or {}).get("chapter_from"), (project.settings or {}).get("chapter_to"))
+    segments = llm_segments(novel.text, size=size, chapters=scoped or None)
     for index, (_chapter, piece) in enumerate(segments):
         db.add(Chunk(novel_id=novel.id, idx=index, text=piece))
     db.flush()
@@ -303,21 +318,28 @@ def run_ingest(db: Session, job: Job, project: Project) -> dict:
                 },
             }
             db.flush()
-            head = [segment for segment in segments if segment[0] < first]
+            from app.novel.chapters import group_chapters, resolved_plan, slice_chapters
+
+            chosen = slice_chapters(chapters, (project.settings or {}).get("chapter_from"), (project.settings or {}).get("chapter_to"))
+            plan = resolved_plan(len(chosen) or 1, project.settings or {})
+            groups = group_chapters(len(chosen) or 1, plan["episodes"])
+            covered = groups[plan["trial"] - 1][1] if groups else first
+            head = [segment for segment in segments if segment[0] < covered]
             notes = _map_notes(db, job, project, head, prefix="快速开拍 · ")
             project = db.get(Project, project.id)
             _maybe_release_early(db, project, job, head, notes)
-            refine = create_job(
-                db,
-                project_id=project.id,
-                stage=BIBLE_REFINE,
-                entity_type="project",
-                entity_id=project.id,
-                depends_on=[job.id],
-                key=f"bible_refine:{project.id}",
-            )
-            if refine.status == "blocked":
-                refine.depends_on = [job.id]
+            if (project.settings or {}).get("full_read"):
+                refine = create_job(
+                    db,
+                    project_id=project.id,
+                    stage=BIBLE_REFINE,
+                    entity_type="project",
+                    entity_id=project.id,
+                    depends_on=[job.id],
+                    key=f"bible_refine:{project.id}",
+                )
+                if refine.status == "blocked":
+                    refine.depends_on = [job.id]
         else:
             notes = _map_notes(db, job, project, segments)
             project = db.get(Project, project.id)
@@ -439,13 +461,18 @@ def _persist_screenplay(db: Session, project: Project, screenplay) -> dict:
 
 
 def run_bible_refine(db: Session, job: Job, project: Project) -> dict:
-    """Finish the chapters the fast open did not read. Does not touch episodes already shooting."""
+    """Finish the chapters the fast open did not read. Off during a trial unless full_read is on."""
     from app.pipeline.longform import bible_from_analysis, reduce_bible
     from app.pipeline.progress import bump
 
+    if not (project.settings or {}).get("full_read"):
+        return {"skipped": True}
     novel = db.query(Novel).filter(Novel.project_id == project.id).one()
     size = int((project.settings or {}).get("chapter_chars") or 24000)
-    segments = llm_segments(novel.text, size=size)
+    from app.novel.chapters import slice_chapters as _slice
+
+    scoped = _slice(split_chapters(novel.text), (project.settings or {}).get("chapter_from"), (project.settings or {}).get("chapter_to"))
+    segments = llm_segments(novel.text, size=size, chapters=scoped or None)
     first = max(1, int((project.settings or {}).get("produce_first") or 2))
     tail = [segment for segment in segments if segment[0] >= first] or segments
     notes = _map_notes(db, job, project, tail, prefix="后台补全 · ")
@@ -1085,6 +1112,9 @@ def run_assemble_episode(db: Session, job: Job, project: Project) -> dict:
         meta={"shots": len(shots)},
     )
     episode.status = "assembled"
+    from app.pipeline.plan import mark_trial_if_ready
+
+    mark_trial_if_ready(db, project)
     return {"artifact_id": artifact.id}
 
 

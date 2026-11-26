@@ -31,6 +31,16 @@ class RelayBody(BaseModel):
 
 class ContinueBody(BaseModel):
     count: int = 1
+    mode: str = "next"  # next | all | stop
+
+
+class PlanBody(BaseModel):
+    episode_mode: str | None = None
+    episode_count: int | None = None
+    produce_first: int | None = None
+    chapter_from: int | None = None
+    chapter_to: int | None = None
+    full_read: bool | None = None
 
 
 class RewriteBody(BaseModel):
@@ -119,11 +129,57 @@ def book(project_id: str, request: Request, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/projects/{project_id}/plan")
+def get_plan(project_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.db.models import Novel
+    from app.pipeline.plan import describe, quote_rest
+
+    project = _load(db, project_id, request)
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one_or_none()
+    info = describe(novel, project.settings or {})
+    info["status"] = project.status
+    info["cost"] = quote_rest(db, project)
+    return info
+
+
+@router.put("/projects/{project_id}/plan")
+def put_plan(project_id: str, body: PlanBody, request: Request, db: Session = Depends(get_db)):
+    from app.db.models import Novel
+    from app.pipeline.plan import apply_plan, cache_count
+
+    project = _load(db, project_id, request)
+    novel = db.query(Novel).filter(Novel.project_id == project.id).one_or_none()
+    kept = cache_count(db, project.id)
+    info = apply_plan(db, project, novel, body.model_dump(exclude_none=True))
+    info["cached_notes"] = kept
+    info["status"] = project.status
+    return info
+
+
 @router.post("/projects/{project_id}/continue")
 def continue_run(project_id: str, body: ContinueBody, request: Request, db: Session = Depends(get_db)):
+    from app.pipeline.plan import stop_background
+
     project = _load(db, project_id, request)
-    ids = continue_episodes(db, project, body.count)
-    return {"jobs": ids}
+    if body.mode == "stop":
+        stop_background(db, project)
+        if project.status == "running":
+            project.status = "trial_done"
+        db.commit()
+        return {"jobs": [], "status": project.status}
+    settings = dict(project.settings or {})
+    if body.mode == "all":
+        settings["finish_all"] = True
+        project.settings = settings
+        count = 10000
+    else:
+        count = body.count
+        project.settings = settings
+    project.status = "running"
+    project.error = None
+    db.commit()
+    ids = continue_episodes(db, project, count)
+    return {"jobs": ids, "status": project.status}
 
 
 @router.get("/projects/{project_id}/script")

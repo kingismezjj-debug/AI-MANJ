@@ -159,6 +159,10 @@ def start_run(db, project: Project) -> None:
             item.id for item in db.query(Job).filter(Job.project_id == project.id, Job.status == "succeeded").all()
         }
         for job in failed:
+            if job.stage == "bible_refine" and not (project.settings or {}).get("full_read"):
+                continue
+            if job.stage in {"assemble_final", "qc_final"} and not (project.settings or {}).get("finish_all"):
+                continue
             if job.stage == "shot_qc":
                 continue
             if set(job.depends_on or []).issubset(succeeded):

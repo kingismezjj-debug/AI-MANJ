@@ -149,6 +149,8 @@ export function statusLabel(status: string): string {
     stale: "待更新",
     awaiting_grid: "待确认分镜格",
     interrupted: "已中断",
+    trial_done: "试做完成",
+    stopped: "已停止",
   };
   return map[status] || status;
 }

@@ -75,6 +75,7 @@ def default_settings(*, require_bible_approval: bool = False, require_script_app
         "merge_shots": False,
         "chapter_concurrency": 12,
         "fast_start": True,
+        "full_read": False,
         "chapter_chars": 24000,
         "stall_seconds": 180,
         "require_grid_confirm": False,

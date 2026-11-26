@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.db.models import Character, Episode, Job, Location, Shot
+from app.db.models import Character, Episode, Job, Location, Project, Shot
 from app.db.session import SessionLocal
 from app.pipeline.dispatch import enqueue
 from app.pipeline.names import (
@@ -204,6 +204,11 @@ def build_graph(db: Session, project_id: str, screen_job_id: str) -> None:
             max_attempts=2,
         )
         episode_assembles.append(assemble.id)
+    project = db.get(Project, project_id)
+    settings = (project.settings or {}) if project is not None else {}
+    outlined = any(episode.status == "outlined" for episode in episodes)
+    if outlined and not settings.get("finish_all"):
+        return
     final = create_job(
         db,
         project_id=project_id,
