@@ -52,7 +52,7 @@ class _ImageRejected(Exception):
 class OpenAICompatibleVideo:
     provider = "openai_compatible"
 
-    def __init__(self, client: httpx.Client | None = None, poll_interval: float = 5.0, poll_timeout: float = 600.0):
+    def __init__(self, client: httpx.Client | None = None, poll_interval: float = 12.0, poll_timeout: float = 900.0):
         settings = get_settings()
         self.api_key = settings.openai_api_key
         self.base_url = settings.openai_base_url.rstrip("/")
@@ -60,6 +60,7 @@ class OpenAICompatibleVideo:
         self.client = client or httpx.Client(timeout=180)
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
+        self.on_progress = None
 
     def apply_route(self, route: dict) -> None:
         from app.settings_store import normalize_openai_base
@@ -79,7 +80,24 @@ class OpenAICompatibleVideo:
             self.poll_timeout = float(params["poll_timeout"])
         return self
 
-    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None, image_url: str | None = None) -> MediaResult:
+    def image_to_video(
+        self,
+        *,
+        prompt,
+        image,
+        reference_images,
+        duration_sec,
+        seed,
+        aspect_ratio,
+        width,
+        height,
+        model,
+        last_image=None,
+        image_url: str | None = None,
+        on_progress=None,
+        resume_task_id: str | None = None,
+        resume_poll_path: str | None = None,
+    ) -> MediaResult:
         if not self.api_key:
             raise ProviderNotConfigured("视频 API Key 是空的")
         from app.adapters.capabilities import clamp_video_request, hailuo_resolution, is_minimax
@@ -108,6 +126,27 @@ class OpenAICompatibleVideo:
             seed=seed,
             minimax=is_minimax(chosen),
         )
+        self.on_progress = on_progress
+        if resume_task_id:
+            task_id = str(resume_task_id)
+            poll_path = resume_poll_path or "/videos/{task_id}"
+            image_notice = ""
+            self._note(task_id, poll_path)
+            finished = self._poll(task_id, poll_path)
+            data = self._fetch_video(task_id, poll_path, finished)
+            notices = [part for part in (clamped["notice"], image_notice) if part]
+            return MediaResult(
+                data=data,
+                mime="video/mp4",
+                usage=Usage(video_seconds=duration),
+                provider=self.provider,
+                model=chosen,
+                duration_sec=float(duration),
+                width=width,
+                height=height,
+                seed=seed,
+                extra={"task_id": task_id, "notice": "；".join(notices), "resumed": True},
+            )
         created, poll_path, image_notice = self._create(
             new_api_body,
             model=chosen,
@@ -120,16 +159,15 @@ class OpenAICompatibleVideo:
         task_id = _task_id(created) or ""
         status = _status(created)
         video_url = _video_url(created)
+        if task_id:
+            self._note(task_id, poll_path)
         if not (video_url and status in _SUCCESS):
             if not task_id:
                 raise ProviderResponseError(f"视频任务没有返回编号：{str(created)[:300]}。请点重试。")
             finished = self._poll(str(task_id), poll_path)
-            video_url = _video_url(finished)
-            if video_url:
-                data = download(self.client, video_url)
-            else:
-                data = self._download_content(str(task_id), poll_path)
+            data = self._fetch_video(str(task_id), poll_path, finished)
         else:
+            self._note(task_id, poll_path)
             data = download(self.client, video_url)
         if not data:
             raise ProviderResponseError("视频文件是空的。请点重试。")
@@ -262,10 +300,30 @@ class OpenAICompatibleVideo:
             raise _ImageRejected(exc) from exc
         return response.json()
 
+    def _note(self, task_id: str, poll_path: str) -> None:
+        if self.on_progress is None or not task_id:
+            return
+        self.on_progress(task_id, poll_path)
+
+    def _pause(self, step: int) -> None:
+        if self.poll_interval <= 0:
+            return
+        delay = min(15.0, max(10.0, float(self.poll_interval)) + step * 2.5)
+        time.sleep(delay)
+
+    def _fetch_video(self, task_id: str, poll_path: str, finished: dict) -> bytes:
+        self._note(task_id, poll_path)
+        video_url = _video_url(finished)
+        if video_url:
+            return download(self.client, video_url)
+        return self._download_content(task_id, poll_path)
+
     def _poll(self, task_id: str, poll_path: str) -> dict:
         paths = [poll_path] + [item for _create, item in _ROUTES if item != poll_path]
         deadline = time.time() + self.poll_timeout
+        step = 0
         while True:
+            self._note(task_id, poll_path)
             payload, used = self._poll_once(task_id, paths)
             paths = [used]
             status = _status(payload)
@@ -274,14 +332,12 @@ class OpenAICompatibleVideo:
             if status in _FAILURE:
                 detail = _error_text(payload) or status
                 raise ProviderResponseError(f"视频生成失败：{detail}。请点重试。")
-            if status and status not in _PENDING and status not in _SUCCESS:
-                # Unknown non-terminal states keep waiting until the timeout.
-                pass
             if time.time() > deadline:
                 progress = _progress(payload)
                 extra = f"，进度 {progress}%" if progress is not None else ""
                 raise ProviderResponseError(f"视频生成超时（{task_id}{extra}）。请点重试。")
-            time.sleep(self.poll_interval)
+            self._pause(step)
+            step += 1
 
     def _poll_once(self, task_id: str, paths: list[str]) -> tuple[dict, str]:
         last: ProviderResponseError | None = None

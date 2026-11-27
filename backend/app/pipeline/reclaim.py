@@ -43,15 +43,83 @@ def mark_interrupted(db, job: Job, reason: str = "工人中断，可点继续") 
 
 
 def reclaim_stale(db, stall_seconds: int | None = None) -> list[str]:
+    from datetime import timedelta
+
+    from sqlalchemy import or_, update
+
     from app.config import get_settings
 
     stall = int(stall_seconds if stall_seconds is not None else get_settings().stall_seconds or 180)
+    cutoff = utcnow() - timedelta(seconds=stall)
     changed = []
     for job in db.query(Job).filter(Job.status == "running").all():
         if not is_stale(job, stall):
             continue
-        mark_interrupted(db, job)
+        # A heartbeat committed after this read means the worker is still alive.
+        updated = db.execute(
+            update(Job)
+            .where(
+                Job.id == job.id,
+                Job.status == "running",
+                or_(
+                    Job.heartbeat_at < cutoff,
+                    (Job.heartbeat_at.is_(None) & (Job.started_at.is_(None) | (Job.started_at < cutoff))),
+                ),
+            )
+            .values(status="interrupted", error="工人中断，可点继续", enqueued=False, finished_at=utcnow())
+        )
+        if updated.rowcount != 1:
+            continue
+        db.expire(job)
+        project = db.get(Project, job.project_id)
+        if project is not None and project.status == "running":
+            project.status = "interrupted"
+            project.error = "工人中断，可点继续"
+            project.phase = (job.stage or "ingest")[:48]
         changed.append(job.id)
     if changed:
         db.commit()
+    else:
+        db.rollback()
     return changed
+
+
+def beat_job(job_id: str, *, task_id: str | None = None, poll_path: str | None = None) -> None:
+    """One short transaction. Safe to call from inside a long provider poll."""
+    import logging
+
+    from app.db.models import ModelCall
+    from app.db.session import SessionLocal
+
+    log = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        job = db.get(Job, job_id)
+        if job is None:
+            return
+        job.heartbeat_at = utcnow()
+        if task_id:
+            result = dict(job.result or {})
+            first = result.get("upstream_task_id") != task_id
+            result["upstream_task_id"] = task_id
+            if poll_path:
+                result["video_poll_path"] = poll_path
+            job.result = result
+            if first:
+                db.add(
+                    ModelCall(
+                        project_id=job.project_id,
+                        job_id=job.id,
+                        category="video",
+                        provider="openai_compatible",
+                        status="submitted",
+                        cost_usd=0,
+                        request_summary=f"task_id={task_id}",
+                    )
+                )
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("video heartbeat failed for %s", job_id)
+    finally:
+        db.close()

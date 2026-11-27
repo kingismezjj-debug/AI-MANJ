@@ -908,6 +908,9 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
     from app.pipeline.frames import publish_keyframe
 
     image_url = publish_keyframe(frame_bytes, width=width, height=height, db=db, project_id=project.id)
+    saved = dict(job.result or {})
+    from app.pipeline.reclaim import beat_job
+
     result = _router(db, project, job).video(
         prompt=prompt,
         image=frame_bytes,
@@ -919,6 +922,9 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
         height=height,
         last_image=None,
         image_url=image_url,
+        on_progress=lambda task_id, poll_path: beat_job(job.id, task_id=task_id, poll_path=poll_path),
+        resume_task_id=saved.get("upstream_task_id") or None,
+        resume_poll_path=saved.get("video_poll_path") or None,
     )
     if result.duration_sec and abs(float(result.duration_sec) - float(shot.duration_sec or 0)) > 0.2:
         shot.duration_sec = float(result.duration_sec)
@@ -941,7 +947,11 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
         },
     )
     mark_shot(shot, VIDEO, "succeeded")
-    return {"artifact_id": artifact.id}
+    return {
+        "artifact_id": artifact.id,
+        "upstream_task_id": (result.extra or {}).get("task_id") or saved.get("upstream_task_id"),
+        "video_poll_path": saved.get("video_poll_path"),
+    }
 
 
 def run_animatic(db: Session, job: Job, project: Project) -> dict:

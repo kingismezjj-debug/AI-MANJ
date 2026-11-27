@@ -28,7 +28,7 @@ A novel goes in, a vertical AI short comes out. The unit of work is the shot. As
 
 项目页、列表和进度按 SQL 计数，不把全部任务读进内存。API 启动时，集行数超过已保存计划的项目会收成该计划：试做那几集的剧本和章节笔记留下，其余空大纲和排队任务删掉。删掉的任务即使被重新投递，也不会重开全书补读。
 
-OpenAI 兼容视频优先走 new-api 的 `POST /v1/video/generations`。这条路由如果返回「无可用渠道」，会改走 `POST /v1/videos`。首帧必须是公网 https 地址：compose 里的 `frames` 只提供随机文件名的 JPEG，`cloudflared` 给它一条临时隧道，不经过 API 和 MinIO。模型设置里也可以手填 `PUBLIC_ASSET_BASE_URL`。没有公网地址时改为纯文字并在镜头上写明。MiniMax 的时长会收到 6 秒或 10 秒。这种配置错误不会把密钥打进冷却。
+OpenAI 兼容视频优先走 new-api 的 `POST /v1/video/generations`。这条路由如果返回「无可用渠道」，会改走 `POST /v1/videos`。首帧必须是公网 https 地址：compose 里的 `frames` 只提供随机文件名的 JPEG，`cloudflared` 给它一条临时隧道，不经过 API 和 MinIO。模型设置里也可以手填 `PUBLIC_ASSET_BASE_URL`。没有公网地址时改为纯文字并在镜头上写明。MiniMax 的时长会收到 6 秒或 10 秒，轮询大约每 12–15 秒一次，并在等待时刷新任务心跳，避免被误判成工人中断。已经付费的任务号会立刻记下，工人重启后继续查同一个任务。这种配置错误不会把密钥打进冷却。
 
 环境变量 `CHAPTER_CONCURRENCY`、`CHAPTER_CHARS`、`STALL_SECONDS` 可以改这三件事。
 

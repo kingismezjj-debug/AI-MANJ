@@ -87,10 +87,19 @@ def execute_job(job_id: str) -> str:
             if job is not None:
                 _fail_or_retry(db, job, project, exc)
             return "failed"
+        db.refresh(job)
+        prior = dict(job.result or {})
+        prior.update(result or {})
         job.status = "succeeded"
-        job.result = result or {}
+        job.result = prior
         job.finished_at = utcnow()
+        job.heartbeat_at = utcnow()
         job.error = None
+        if project is not None:
+            db.refresh(project)
+            if project.status == "interrupted" and (project.error or "").startswith("工人中断"):
+                project.status = "running"
+                project.error = None
         db.commit()
         publish(
             job.project_id,

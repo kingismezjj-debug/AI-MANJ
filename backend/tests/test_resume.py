@@ -11,12 +11,15 @@ from app.adapters.router import ModelRouter
 
 def _job(project, **kwargs):
     status = kwargs.pop("status", "running")
+    stage = kwargs.pop("stage", "ingest")
+    entity_type = kwargs.pop("entity_type", "project")
+    entity_id = kwargs.pop("entity_id", project.id)
     job = Job(
         project_id=project.id,
-        stage="ingest",
+        stage=stage,
         status=status,
-        entity_type="project",
-        entity_id=project.id,
+        entity_type=entity_type,
+        entity_id=entity_id,
         depends_on=[],
         idempotency_key=kwargs.pop("key"),
         **kwargs,
@@ -39,6 +42,71 @@ def test_stale_running_job_becomes_interrupted(db):
     assert job.status == "interrupted"
     assert project.status == "interrupted"
     assert "继续" in (project.error or "")
+
+
+def test_reaper_leaves_a_job_alone_when_its_heartbeat_is_fresh(db, monkeypatch):
+    project = Project(title="刚跳过", status="running", settings={})
+    db.add(project)
+    db.flush()
+    job = _job(project, key="beat-1", started_at=utcnow() - timedelta(minutes=10), heartbeat_at=utcnow())
+    db.add(job)
+    db.commit()
+    monkeypatch.setattr("app.pipeline.reclaim.is_stale", lambda *_args, **_kwargs: True)
+    assert reclaim_stale(db, stall_seconds=180) == []
+    db.refresh(job)
+    assert job.status == "running"
+
+
+def test_video_heartbeat_persists_the_paid_task(db):
+    from app.pipeline.reclaim import beat_job
+
+    project = Project(title="心跳", status="running", settings={})
+    db.add(project)
+    db.flush()
+    job = _job(project, key="video-beat", status="running", stage="video", started_at=utcnow() - timedelta(minutes=4))
+    db.add(job)
+    db.commit()
+    beat_job(job.id, task_id="task_paid", poll_path="/videos/{task_id}")
+    beat_job(job.id, task_id="task_paid", poll_path="/videos/{task_id}")
+    db.refresh(job)
+    assert job.result["upstream_task_id"] == "task_paid"
+    assert job.result["video_poll_path"] == "/videos/{task_id}"
+    assert job.heartbeat_at > job.started_at
+    assert db.query(ModelCall).filter(ModelCall.job_id == job.id, ModelCall.request_summary == "task_id=task_paid").count() == 1
+    assert reclaim_stale(db, stall_seconds=180) == []
+
+
+def test_successful_finish_overwrites_a_reaper_interrupt(db, monkeypatch):
+    from app.db.session import SessionLocal
+    from app.pipeline.reclaim import mark_interrupted
+
+    project = Project(title="赶完", status="running", settings={})
+    db.add(project)
+    db.flush()
+    job = _job(project, key="finish-1", status="queued", stage="video", entity_type="shot", entity_id="shot-1")
+    db.add(job)
+    db.commit()
+
+    def finish(session, current):
+        other = SessionLocal()
+        try:
+            row = other.get(Job, current.id)
+            mark_interrupted(other, row)
+            other.commit()
+        finally:
+            other.close()
+        return {"artifact_id": "clip-1", "upstream_task_id": "task_paid"}
+
+    monkeypatch.setattr("app.pipeline.executor.run_stage", finish)
+    monkeypatch.setattr("app.pipeline.executor.kick", lambda *_args, **_kwargs: None)
+    assert execute_job(job.id) == "ran"
+    db.refresh(job)
+    db.refresh(project)
+    assert job.status == "succeeded"
+    assert job.result["artifact_id"] == "clip-1"
+    assert job.result["upstream_task_id"] == "task_paid"
+    assert job.error is None
+    assert project.status == "running"
 
 
 def test_live_job_is_not_interrupted(db):

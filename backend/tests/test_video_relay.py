@@ -21,7 +21,9 @@ def _reset_video_route_cache():
 
 def _adapter(handler, **kwargs):
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    video = OpenAICompatibleVideo(client=client, poll_interval=0, poll_timeout=5, **kwargs)
+    params = {"poll_interval": 0, "poll_timeout": 5}
+    params.update(kwargs)
+    video = OpenAICompatibleVideo(client=client, **params)
     video.api_key = "sk-test"
     video.base_url = "https://relay.example/v1"
     return video
@@ -376,6 +378,69 @@ def test_no_channel_does_not_cool_the_key_and_shows_the_relay_message():
     with pytest.raises(ProviderResponseError, match="429"):
         call_with_keys("slot-429", [cooled], limited)
     assert cooling(cooled) is True
+
+
+def test_resume_does_not_create_another_task_and_beats_every_poll(monkeypatch):
+    beats = []
+    polls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            raise AssertionError("paid task was submitted again")
+        if request.url.path == "/v1/videos/task_keep":
+            polls["n"] += 1
+            if polls["n"] == 1:
+                return httpx.Response(200, json={"id": "task_keep", "status": "queued", "progress": 5})
+            return httpx.Response(200, json={"id": "task_keep", "status": "completed", "progress": 100, "object": "video"})
+        if request.url.path == "/v1/videos/task_keep/content":
+            return httpx.Response(200, content=b"kept-mp4")
+        return httpx.Response(404, text="no")
+
+    video = _adapter(handler)
+    result = video.image_to_video(
+        prompt="苏桐回头",
+        image=b"\x89PNG-keyframe",
+        reference_images=[],
+        duration_sec=4,
+        seed=1,
+        aspect_ratio="9:16",
+        width=720,
+        height=1280,
+        model="MiniMax-H3",
+        resume_task_id="task_keep",
+        resume_poll_path="/videos/{task_id}",
+        on_progress=lambda task_id, poll_path: beats.append((task_id, poll_path)),
+    )
+    assert result.data == b"kept-mp4"
+    assert result.extra["resumed"] is True
+    assert len(beats) >= 2
+    assert {item[0] for item in beats} == {"task_keep"}
+
+
+def test_poll_waits_between_10_and_15_seconds(monkeypatch):
+    slept = []
+    monkeypatch.setattr("app.adapters.video.openai_compatible.time.sleep", lambda delay: slept.append(delay))
+    polls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"task_id": "slow", "status": "queued"})
+        if request.url.path.endswith("/slow"):
+            polls["n"] += 1
+            if polls["n"] < 3:
+                return httpx.Response(200, json={"status": "in_progress", "progress": polls["n"] * 20})
+            return httpx.Response(200, json={"status": "completed", "url": "https://cdn.example/slow.mp4"})
+        if request.url.host == "cdn.example":
+            return httpx.Response(200, content=b"slow-mp4")
+        return httpx.Response(404, text="no")
+
+    video = _adapter(handler, poll_interval=12, poll_timeout=60)
+    result = _run(video)
+    assert result.data == b"slow-mp4"
+    assert len(slept) == 2
+    assert 10 <= slept[0] <= 15
+    assert slept[1] >= slept[0]
+    assert slept[1] <= 15
 
 
 def test_missing_video_key_still_names_the_problem():

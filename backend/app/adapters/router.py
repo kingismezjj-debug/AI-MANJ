@@ -52,7 +52,23 @@ class ModelRouter:
 
         return self._invoke("image", call, summary=(prompt or "")[:80])
 
-    def video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, last_image=None, image_url: str | None = None):
+    def video(
+        self,
+        *,
+        prompt,
+        image,
+        reference_images,
+        duration_sec,
+        seed,
+        aspect_ratio,
+        width,
+        height,
+        last_image=None,
+        image_url: str | None = None,
+        on_progress=None,
+        resume_task_id: str | None = None,
+        resume_poll_path: str | None = None,
+    ):
         def call(adapter, route):
             import inspect
 
@@ -68,8 +84,15 @@ class ModelRouter:
                 "model": route.get("model") or None,
                 "last_image": last_image,
             }
-            if "image_url" in inspect.signature(adapter.image_to_video).parameters:
+            accepted = inspect.signature(adapter.image_to_video).parameters
+            if "image_url" in accepted:
                 kwargs["image_url"] = image_url
+            if "on_progress" in accepted:
+                kwargs["on_progress"] = on_progress
+            if "resume_task_id" in accepted:
+                kwargs["resume_task_id"] = resume_task_id
+            if "resume_poll_path" in accepted:
+                kwargs["resume_poll_path"] = resume_poll_path
             return adapter.image_to_video(**kwargs)
 
         return self._invoke("video", call, summary=(prompt or "")[:80])
