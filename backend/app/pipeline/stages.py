@@ -904,9 +904,13 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
                     return {"artifact_id": artifact.id, "merged_into": head.id}
             prompt = timestamped_prompt(group)
             duration = sum(float(item.duration_sec or 2.5) for item in group)
+    frame_bytes = store.get(frame.storage_key)
+    from app.pipeline.frames import publish_keyframe
+
+    image_url = publish_keyframe(frame_bytes, width=width, height=height, db=db, project_id=project.id)
     result = _router(db, project, job).video(
         prompt=prompt,
-        image=store.get(frame.storage_key),
+        image=frame_bytes,
         reference_images=refs,
         duration_sec=duration,
         seed=shot.seed,
@@ -914,6 +918,7 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
         width=width,
         height=height,
         last_image=None,
+        image_url=image_url,
     )
     if result.duration_sec and abs(float(result.duration_sec) - float(shot.duration_sec or 0)) > 0.2:
         shot.duration_sec = float(result.duration_sec)

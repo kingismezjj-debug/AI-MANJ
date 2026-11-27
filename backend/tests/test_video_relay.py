@@ -27,7 +27,7 @@ def _adapter(handler, **kwargs):
     return video
 
 
-def _run(video, model="MiniMax-H3", duration=4, width=720, height=1280):
+def _run(video, model="MiniMax-H3", duration=4, width=720, height=1280, image_url=None):
     return video.image_to_video(
         prompt="苏桐回头",
         image=b"\x89PNG-keyframe",
@@ -38,6 +38,7 @@ def _run(video, model="MiniMax-H3", duration=4, width=720, height=1280):
         width=width,
         height=height,
         model=model,
+        image_url=image_url,
     )
 
 
@@ -270,7 +271,7 @@ def test_no_channel_falls_through_and_downloads_content():
     assert again.data == b"second-mp4"
 
 
-def test_videos_multipart_rejection_retries_json_then_text():
+def test_videos_multipart_503_falls_through_to_text_on_the_same_route():
     kinds = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -278,54 +279,81 @@ def test_videos_multipart_rejection_retries_json_then_text():
             if request.url.path.endswith("/content"):
                 return httpx.Response(200, content=b"text-mp4")
             return httpx.Response(200, json={"status": "completed", "progress": 100})
+        if request.url.path != "/v1/videos":
+            kinds.append(request.url.path)
+            return httpx.Response(503, json=_NO_CHANNEL)
         ctype = request.headers.get("content-type", "")
         if ctype.startswith("multipart/"):
             kinds.append("multipart")
-            return httpx.Response(400, json={"error": {"message": "multipart rejected"}})
+            return httpx.Response(503, json=_NO_CHANNEL)
         body = json.loads(request.content)
-        assert body["seconds"] == "6"
-        assert body["size"] == "720x1280"
-        assert isinstance(body["seconds"], str)
-        if "image" in body:
-            kinds.append("json-image")
-            return httpx.Response(400, json={"error": {"message": "image rejected"}})
-        kinds.append("text")
         assert "image" not in body
+        assert body["seconds"] == "6"
+        kinds.append("text")
         return httpx.Response(200, json={"id": "task_text", "status": "queued"})
 
-    # Dead routes first, then /videos.
-    def routed(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST" and request.url.path != "/v1/videos":
-            return httpx.Response(503, json=_NO_CHANNEL)
-        return handler(request)
-
-    result = _run(_adapter(routed))
-    assert kinds == ["multipart", "json-image", "text"]
+    result = _run(_adapter(handler))
+    assert kinds == ["/v1/video/generations", "/v1/videos/generations", "multipart", "text"]
     assert "纯文字" in result.extra["notice"]
     assert result.data == b"text-mp4"
 
+    kinds.clear()
+    again = _run(_adapter(handler))
+    assert "multipart" not in kinds
+    assert kinds[-1] == "text"
+    assert again.data == b"text-mp4"
 
-def test_json_image_is_enough_when_multipart_is_rejected():
+
+def test_public_url_is_preferred_and_remembered():
+    posts = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path != "/v1/videos":
-            return httpx.Response(404, text="Invalid URL")
+            return httpx.Response(503, json=_NO_CHANNEL)
         if request.method == "POST":
-            ctype = request.headers.get("content-type", "")
-            if ctype.startswith("multipart/"):
-                return httpx.Response(415, text="use json")
+            posts.append(request.headers.get("content-type", ""))
             body = json.loads(request.content)
-            assert body["image"].startswith("data:image/png;base64,")
-            assert body["seconds"] == "5"
-            return httpx.Response(200, json={"id": "task_json"})
-        if request.url.path == "/v1/videos/task_json":
-            return httpx.Response(200, json={"status": "completed", "progress": 100})
+            assert body["image"] == "https://frames.example/kf.jpg"
+            assert body["seconds"] == "6"
+            assert not body["image"].startswith("data:")
+            return httpx.Response(200, json={"id": "task_url", "status": "queued"})
         if request.url.path.endswith("/content"):
-            return httpx.Response(200, content=b"json-mp4")
-        return httpx.Response(404, text="no")
+            return httpx.Response(200, content=b"url-mp4")
+        return httpx.Response(200, json={"status": "completed", "progress": 100})
 
-    result = _run(_adapter(handler), model="kling-v2-6", duration=5, width=720, height=1280)
-    assert result.data == b"json-mp4"
-    assert "纯文字" not in (result.extra.get("notice") or "")
+    result = _run(_adapter(handler), image_url="https://frames.example/kf.jpg")
+    assert result.data == b"url-mp4"
+    assert posts == ["application/json"]
+    posts.clear()
+    again = _run(_adapter(handler), image_url="https://frames.example/kf.jpg")
+    assert again.data == b"url-mp4"
+    assert posts == ["application/json"]
+
+
+def test_fail_to_fetch_task_falls_back_to_text_only():
+    kinds = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path != "/v1/videos":
+            return httpx.Response(503, json=_NO_CHANNEL)
+        if request.method == "POST":
+            body = json.loads(request.content)
+            if body.get("image"):
+                kinds.append("url")
+                return httpx.Response(400, json={"code": "fail_to_fetch_task", "message": "task plugin upstream rejected the submission"})
+            kinds.append("text")
+            return httpx.Response(200, json={"id": "task_text", "status": "queued"})
+        if request.url.path.endswith("/content"):
+            return httpx.Response(200, content=b"text-mp4")
+        return httpx.Response(200, json={"status": "completed", "progress": 100})
+
+    result = _run(_adapter(handler), image_url="https://frames.example/kf.jpg")
+    assert kinds == ["url", "text"]
+    assert "纯文字" in result.extra["notice"]
+    kinds.clear()
+    again = _run(_adapter(handler), image_url="https://frames.example/kf.jpg")
+    assert kinds == ["text"]
+    assert again.data == b"text-mp4"
 
 
 def test_no_channel_does_not_cool_the_key_and_shows_the_relay_message():

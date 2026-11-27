@@ -431,7 +431,9 @@ def _probe(category: str, slot: dict) -> str:
         if not model:
             raise RuntimeError("未填写视频模型 id")
         names = fetch_model_ids(normalize_openai_base(base), slot["api_key"])
-        return describe_model_match(model, names)
+        from app.pipeline.frames import frame_label
+
+        return describe_model_match(model, names) + " · " + frame_label()
     url = base if base.endswith("/models") else base.rstrip("/") + "/models"
     if provider == "openai_compatible":
         url = normalize_openai_base(base) + "/models"

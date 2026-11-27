@@ -28,7 +28,7 @@ A novel goes in, a vertical AI short comes out. The unit of work is the shot. As
 
 项目页、列表和进度按 SQL 计数，不把全部任务读进内存。API 启动时，集行数超过已保存计划的项目会收成该计划：试做那几集的剧本和章节笔记留下，其余空大纲和排队任务删掉。删掉的任务即使被重新投递，也不会重开全书补读。
 
-OpenAI 兼容视频优先走 new-api 的 `POST /v1/video/generations`。这条路由如果返回「无可用渠道」，会改走 OpenAI 的 `POST /v1/videos`（首帧用 multipart 的 `input_reference`），完成后从 `/v1/videos/{id}/content` 下载 mp4。成功过的地址会被记住。模型名区分大小写；MiniMax 的时长会收到 6 秒或 10 秒。这种配置错误不会把密钥打进冷却，镜头上显示中转原文，也不会悄悄换成一段模拟视频。
+OpenAI 兼容视频优先走 new-api 的 `POST /v1/video/generations`。这条路由如果返回「无可用渠道」，会改走 `POST /v1/videos`。首帧必须是公网 https 地址：compose 里的 `frames` 只提供随机文件名的 JPEG，`cloudflared` 给它一条临时隧道，不经过 API 和 MinIO。模型设置里也可以手填 `PUBLIC_ASSET_BASE_URL`。没有公网地址时改为纯文字并在镜头上写明。MiniMax 的时长会收到 6 秒或 10 秒。这种配置错误不会把密钥打进冷却。
 
 环境变量 `CHAPTER_CONCURRENCY`、`CHAPTER_CHARS`、`STALL_SECONDS` 可以改这三件事。
 
@@ -81,7 +81,7 @@ Host port 8010 via `docker-compose.override.yml` still works: the container list
 
 Project and list pages count jobs in SQL. On API startup, a project with more episode rows than its saved plan is collapsed: the trial scripts and chapter notes stay, and the extra outline jobs are deleted so a restarted worker cannot resume a full-book fill.
 
-An OpenAI-compatible video slot tries `/v1/video/generations`, and if that route has no channel it uses `POST /v1/videos` with the keyframe as `input_reference`, then downloads `/v1/videos/{id}/content`. A no-channel error does not cool the API key down. Model ids are case-sensitive. MiniMax durations are rounded up to 6 or 10 seconds. A relay error stays on the shot instead of being replaced by a mock clip.
+An OpenAI-compatible video slot tries `/v1/video/generations`, and if that route has no channel it uses `POST /v1/videos` with the keyframe as a public https URL, then downloads `/v1/videos/{id}/content`. The `frames` service publishes only those JPEGs, and `cloudflared` tunnels just that service. Set `PUBLIC_ASSET_BASE_URL` to use your own host instead. A no-channel error does not cool the API key down. Model ids are case-sensitive. MiniMax durations are rounded up to 6 or 10 seconds. A relay error stays on the shot instead of being replaced by a mock clip.
 
 ## Setup
 

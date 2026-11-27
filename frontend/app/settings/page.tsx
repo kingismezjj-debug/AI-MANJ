@@ -29,7 +29,7 @@ const LABELS: Record<string, string> = {
 const HINTS: Record<string, string> = {
   llm: "默认 DeepSeek。Base URL 填 https://api.deepseek.com/v1 ，模型填 deepseek-chat 或 deepseek-reasoner。自建中转同样走 OpenAI 兼容。",
   image: "Seedream 走火山方舟，或任何 OpenAI 兼容的 /images/generations。",
-  video: "Seedance、可灵，或通用 HTTP 轮询。",
+  video: "Seedance、可灵，或 OpenAI 兼容中转。中转只接受公网 https 首帧，不接受本机 data URL。",
 };
 
 export default function SettingsPage() {
@@ -41,6 +41,8 @@ export default function SettingsPage() {
   const [fastModel, setFastModel] = useState("");
   const [results, setResults] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const [publicBase, setPublicBase] = useState("");
+  const [frameLabel, setFrameLabel] = useState("首帧公网地址：不可用");
 
   function apply(next: Slot[]) {
     setSlots(next);
@@ -53,12 +55,18 @@ export default function SettingsPage() {
     const params = brain?.params || {};
     if (params.chapter_concurrency) setConcurrency(String(params.chapter_concurrency));
     if (typeof params.fast_model === "string") setFastModel(params.fast_model);
+    const video = next.find((slot) => slot.category === "video");
+    const saved = video?.params?.public_asset_base_url;
+    if (typeof saved === "string") setPublicBase(saved);
   }
 
   useEffect(() => {
     apiGet<{ slots: Slot[] }>("/api/settings/slots")
       .then((body) => apply(body.slots))
       .catch((err: Error) => setError(err.message));
+    apiGet<{ label: string }>("/api/settings/public-frames")
+      .then((body) => setFrameLabel(body.label))
+      .catch(() => setFrameLabel("首帧公网地址：不可用"));
   }, []);
 
   function update(category: string, patch: Partial<Slot>) {
@@ -73,10 +81,14 @@ export default function SettingsPage() {
         params.chapter_concurrency = Math.max(1, Math.min(16, Number(concurrency) || 12));
         params.fast_model = fastModel.trim();
       }
+      if (slot.category === "video") {
+        params.public_asset_base_url = publicBase.trim();
+      }
       return { ...slot, api_key: keys[slot.category] || "", params };
     });
     const saved = await apiPut<{ slots: Slot[] }>("/api/settings/slots", { slots: payload });
     apply(saved.slots);
+    apiGet<{ label: string }>("/api/settings/public-frames").then((body) => setFrameLabel(body.label)).catch(() => undefined);
     setKeys({});
     setMessage("已保存，下一次调用立即生效。");
   }
@@ -113,6 +125,13 @@ export default function SettingsPage() {
         <input value={concurrency} onChange={(event) => setConcurrency(event.target.value)} />
         <label>分析用快速模型</label>
         <input value={fastModel} placeholder="deepseek-chat" onChange={(event) => setFastModel(event.target.value)} />
+      </section>
+      <section className="panel" style={{ marginBottom: 14 }}>
+        <h3>首帧公网地址</h3>
+        <p className="meta">{frameLabel}</p>
+        <p className="meta">留空则使用 cloudflared 隧道。也可以填 R2、S3 或自己的域名根地址。这里只公开随机文件名的 JPEG 首帧，24 小时后删除。</p>
+        <label>手动公网根地址</label>
+        <input value={publicBase} placeholder="https://frames.example.com" onChange={(event) => setPublicBase(event.target.value)} />
       </section>
       {primary.map((slot) => (
         <SlotCard key={slot.category} slot={slot} hint={HINTS[slot.category]} secret={keys[slot.category] || ""} params={paramsText[slot.category] || "{}"} result={results[slot.category] || ""} onChange={update} onSecret={(value) => setKeys({ ...keys, [slot.category]: value })} onParams={(value) => setParamsText({ ...paramsText, [slot.category]: value })} onTest={() => void test(slot).catch((err: Error) => setError(err.message))} />

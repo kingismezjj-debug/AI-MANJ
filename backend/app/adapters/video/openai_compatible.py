@@ -33,9 +33,18 @@ _NO_CHANNEL = ("model_not_found", "无可用渠道", "no available channel", "no
 
 _route_lock = threading.Lock()
 _preferred_create: dict[str, str] = {}
+_image_mode: dict[str, str] = {}
+_multipart_bad: set[str] = set()
 
 
 class _NextRoute(Exception):
+    def __init__(self, reason: BaseException):
+        self.reason = reason
+
+
+class _ImageRejected(Exception):
+    """This image submission was refused. Stay on /videos and try another mode."""
+
     def __init__(self, reason: BaseException):
         self.reason = reason
 
@@ -70,7 +79,7 @@ class OpenAICompatibleVideo:
             self.poll_timeout = float(params["poll_timeout"])
         return self
 
-    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None) -> MediaResult:
+    def image_to_video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, model, last_image=None, image_url: str | None = None) -> MediaResult:
         if not self.api_key:
             raise ProviderNotConfigured("视频 API Key 是空的")
         from app.adapters.capabilities import clamp_video_request, hailuo_resolution, is_minimax
@@ -106,6 +115,7 @@ class OpenAICompatibleVideo:
             seconds=str(duration),
             size=size,
             image=bytes(image_bytes) if image_bytes else None,
+            image_url=(image_url or "").strip() or None,
         )
         task_id = _task_id(created) or ""
         status = _status(created)
@@ -143,12 +153,24 @@ class OpenAICompatibleVideo:
     def _json_headers(self) -> dict:
         return {**self._auth(), "Content-Type": "application/json"}
 
-    def _create(self, new_api_body: dict, *, model: str, prompt: str, seconds: str, size: str, image: bytes | None) -> tuple[dict, str, str]:
+    def _create(
+        self,
+        new_api_body: dict,
+        *,
+        model: str,
+        prompt: str,
+        seconds: str,
+        size: str,
+        image: bytes | None,
+        image_url: str | None,
+    ) -> tuple[dict, str, str]:
         last: BaseException | None = None
         for create_path, poll_path in ordered_routes(self.base_url):
             try:
                 if create_path == "/videos":
-                    created, notice = self._create_openai_videos(model=model, prompt=prompt, seconds=seconds, size=size, image=image)
+                    created, notice = self._create_openai_videos(
+                        model=model, prompt=prompt, seconds=seconds, size=size, image=image, image_url=image_url
+                    )
                 else:
                     created = self._post_json(create_path, new_api_body)
                     notice = ""
@@ -159,27 +181,38 @@ class OpenAICompatibleVideo:
             return created, poll_path, notice
         raise ProviderResponseError(f"视频提交失败：{last}。请点重试。")
 
-    def _create_openai_videos(self, *, model: str, prompt: str, seconds: str, size: str, image: bytes | None) -> tuple[dict, str]:
+    def _create_openai_videos(
+        self, *, model: str, prompt: str, seconds: str, size: str, image: bytes | None, image_url: str | None
+    ) -> tuple[dict, str]:
+        """Stay on /videos. A multipart 503 is an image-mode miss, not a dead route."""
         fields = {"model": model, "prompt": prompt, "seconds": seconds, "size": size}
-        if image:
+        mode = image_mode_for(self.base_url)
+        rejected = "首帧未被中转接受，本次改为纯文字生成视频"
+        missing = "没有公网首帧地址，本次改为纯文字生成视频"
+
+        def text_only(notice: str) -> tuple[dict, str]:
+            return self._post_videos_json(fields), notice
+
+        if image_url and mode != "text":
+            try:
+                created = self._post_videos_json({**fields, "image": image_url})
+            except _ImageRejected:
+                remember_image_mode(self.base_url, "text")
+                return text_only(rejected)
+            remember_image_mode(self.base_url, "url")
+            return created, ""
+
+        if mode == "text":
+            notice = rejected if (image or image_url) else ""
+            return text_only(notice)
+
+        if image and not multipart_known_bad(self.base_url):
             try:
                 return self._post_multipart("/videos", fields, image), ""
-            except _NextRoute:
-                raise
-            except ProviderResponseError as exc:
-                if not _client_error(exc):
-                    raise
-            try:
-                body = {**fields, "image": _image_ref(image)}
-                return self._post_json("/videos", body), ""
-            except _NextRoute:
-                raise
-            except ProviderResponseError as exc:
-                if not _client_error(exc):
-                    raise
-            created = self._post_json("/videos", fields)
-            return created, "首帧未被中转接受，本次改为纯文字生成视频"
-        return self._post_json("/videos", fields), ""
+            except _ImageRejected:
+                mark_multipart_bad(self.base_url)
+        notice = missing if image else ""
+        return text_only(notice)
 
     def _post_json(self, path: str, body: dict) -> dict:
         try:
@@ -191,6 +224,24 @@ class OpenAICompatibleVideo:
                 json=body,
             )
         except ProviderResponseError as exc:
+            if _route_unavailable(exc):
+                raise _NextRoute(exc) from exc
+            raise ProviderResponseError(f"{exc}。请点重试。") from exc
+        return response.json()
+
+    def _post_videos_json(self, body: dict) -> dict:
+        """JSON create on /videos. Image rejections stay on this route."""
+        try:
+            response = send(
+                self.client,
+                "POST",
+                f"{self.base_url}/videos",
+                headers=self._json_headers(),
+                json=body,
+            )
+        except ProviderResponseError as exc:
+            if body.get("image") and (_image_rejected(exc) or _route_unavailable(exc)):
+                raise _ImageRejected(exc) from exc
             if _route_unavailable(exc):
                 raise _NextRoute(exc) from exc
             raise ProviderResponseError(f"{exc}。请点重试。") from exc
@@ -208,9 +259,7 @@ class OpenAICompatibleVideo:
                 files={"input_reference": (filename, image, mime)},
             )
         except ProviderResponseError as exc:
-            if _route_unavailable(exc):
-                raise _NextRoute(exc) from exc
-            raise ProviderResponseError(f"{exc}。请点重试。") from exc
+            raise _ImageRejected(exc) from exc
         return response.json()
 
     def _poll(self, task_id: str, poll_path: str) -> dict:
@@ -260,6 +309,28 @@ class OpenAICompatibleVideo:
 def clear_route_cache() -> None:
     with _route_lock:
         _preferred_create.clear()
+        _image_mode.clear()
+        _multipart_bad.clear()
+
+
+def image_mode_for(base_url: str) -> str:
+    with _route_lock:
+        return _image_mode.get(base_url.rstrip("/"), "")
+
+
+def remember_image_mode(base_url: str, mode: str) -> None:
+    with _route_lock:
+        _image_mode[base_url.rstrip("/")] = mode
+
+
+def multipart_known_bad(base_url: str) -> bool:
+    with _route_lock:
+        return base_url.rstrip("/") in _multipart_bad
+
+
+def mark_multipart_bad(base_url: str) -> None:
+    with _route_lock:
+        _multipart_bad.add(base_url.rstrip("/"))
 
 
 def remember_route(base_url: str, create_path: str) -> None:
@@ -290,6 +361,11 @@ def _route_unavailable(exc: BaseException) -> bool:
     if code == "404":
         return True
     return any(token in text or token in lowered for token in _NO_CHANNEL)
+
+
+def _image_rejected(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "fail_to_fetch_task" in text or "upstream rejected" in text or _client_error(exc)
 
 
 def _client_error(exc: BaseException) -> bool:

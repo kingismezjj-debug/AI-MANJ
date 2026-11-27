@@ -52,20 +52,25 @@ class ModelRouter:
 
         return self._invoke("image", call, summary=(prompt or "")[:80])
 
-    def video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, last_image=None):
+    def video(self, *, prompt, image, reference_images, duration_sec, seed, aspect_ratio, width, height, last_image=None, image_url: str | None = None):
         def call(adapter, route):
-            return adapter.image_to_video(
-                prompt=prompt,
-                image=image,
-                reference_images=reference_images or [],
-                duration_sec=duration_sec,
-                seed=seed,
-                aspect_ratio=aspect_ratio,
-                width=width,
-                height=height,
-                model=route.get("model") or None,
-                last_image=last_image,
-            )
+            import inspect
+
+            kwargs = {
+                "prompt": prompt,
+                "image": image,
+                "reference_images": reference_images or [],
+                "duration_sec": duration_sec,
+                "seed": seed,
+                "aspect_ratio": aspect_ratio,
+                "width": width,
+                "height": height,
+                "model": route.get("model") or None,
+                "last_image": last_image,
+            }
+            if "image_url" in inspect.signature(adapter.image_to_video).parameters:
+                kwargs["image_url"] = image_url
+            return adapter.image_to_video(**kwargs)
 
         return self._invoke("video", call, summary=(prompt or "")[:80])
 

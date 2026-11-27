@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
 
     video_http_api_key: str = ""
+    public_asset_base_url: str = ""
+    frame_publish_dir: str = "./.frame-public"
+    cloudflared_metrics_url: str = ""
 
     sample_novel_path: str = ""
     cors_origins: str = "*"

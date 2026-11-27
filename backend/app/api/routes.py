@@ -136,6 +136,14 @@ def post_slot_test(body: SlotTest, db: Session = Depends(get_db)):
     return probe_slot(db, body.model_dump())
 
 
+@router.get("/settings/public-frames")
+def public_frames(db: Session = Depends(get_db)):
+    from app.pipeline.frames import frame_label, public_frame_base
+
+    base = public_frame_base(db)
+    return {"available": bool(base), "label": frame_label(db), "base": base}
+
+
 @router.get("/projects/{project_id}/slots")
 def project_slots(project_id: str, request: Request, db: Session = Depends(get_db)):
     _load(db, project_id, request)
