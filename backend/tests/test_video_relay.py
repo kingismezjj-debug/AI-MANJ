@@ -7,8 +7,16 @@ import pytest
 
 from app.adapters.capabilities import caps_for, clamp_video_request
 from app.adapters.errors import ProviderNotConfigured, ProviderResponseError
-from app.adapters.video.openai_compatible import OpenAICompatibleVideo
+from app.adapters.keys import call_with_keys, cooling
+from app.adapters.video.openai_compatible import OpenAICompatibleVideo, clear_route_cache
 from app.settings_store import describe_model_match
+
+
+@pytest.fixture(autouse=True)
+def _reset_video_route_cache():
+    clear_route_cache()
+    yield
+    clear_route_cache()
 
 
 def _adapter(handler, **kwargs):
@@ -107,7 +115,7 @@ def test_client_error_does_not_try_another_create():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             posts.append(request.url.path)
-            return httpx.Response(400, json={"error": {"message": "model_not_found"}})
+            return httpx.Response(400, json={"error": {"message": "invalid_prompt"}})
         return httpx.Response(500, text="should not poll")
 
     with pytest.raises(ProviderResponseError, match="请点重试"):
@@ -192,6 +200,154 @@ def test_real_video_error_is_not_replaced_by_mock(db, monkeypatch):
             height=1280,
         )
     assert called["mock"] == 0
+
+
+_NO_CHANNEL = {
+    "error": {
+        "code": "model_not_found",
+        "message": "分组 video_generation 下模型 MiniMax-H3 无可用渠道（distributor）",
+        "type": "new_api_error",
+    }
+}
+
+
+def test_no_channel_falls_through_and_downloads_content():
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            posts.append(request.url.path)
+            if request.url.path != "/v1/videos":
+                return httpx.Response(503, json=_NO_CHANNEL)
+            body = request.content
+            assert request.headers["content-type"].startswith("multipart/form-data")
+            assert b'name="seconds"' in body
+            assert b"\r\n6\r\n" in body or b"\n6\n" in body
+            assert b"720x1280" in body
+            assert b"MiniMax-H3" in body
+            assert b'name="input_reference"' in body
+            assert request.headers["authorization"] == "Bearer sk-test"
+            return httpx.Response(200, json={"id": "task_1", "task_id": "task_1", "status": "queued", "model": "MiniMax-H3"})
+        if request.url.path == "/v1/videos/task_1":
+            if request.headers.get("authorization") != "Bearer sk-test":
+                return httpx.Response(401, text="missing bearer")
+            return httpx.Response(200, json={"id": "task_1", "status": "completed", "progress": 100, "object": "video"})
+        if request.url.path == "/v1/videos/task_1/content":
+            assert request.headers["authorization"] == "Bearer sk-test"
+            return httpx.Response(200, content=b"real-mp4", headers={"content-type": "video/mp4"})
+        return httpx.Response(404, text="Invalid URL")
+
+    result = _run(_adapter(handler))
+    assert posts == ["/v1/video/generations", "/v1/videos/generations", "/v1/videos"]
+    assert result.data == b"real-mp4"
+    assert "纯文字" not in (result.extra.get("notice") or "")
+
+    posts.clear()
+
+    def second(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            posts.append(request.url.path)
+            return httpx.Response(200, json={"id": "task_2", "status": "queued"})
+        if request.url.path == "/v1/videos/task_2":
+            return httpx.Response(200, json={"status": "in_progress", "progress": 40}) if posts.count("/v1/videos") == 1 and not getattr(second, "polled", False) else httpx.Response(200, json={"status": "completed", "progress": 100, "object": "video"})
+        if request.url.path == "/v1/videos/task_2/content":
+            return httpx.Response(200, content=b"second-mp4")
+        return httpx.Response(500, text="should not call the dead route")
+
+    second.polled = False
+
+    def second_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/videos/task_2":
+            if not second_handler.seen:
+                second_handler.seen = True
+                return httpx.Response(200, json={"status": "in_progress", "progress": 40})
+            return httpx.Response(200, json={"status": "completed", "progress": 100, "object": "video"})
+        return second(request)
+
+    second_handler.seen = False
+    again = _run(_adapter(second_handler))
+    assert posts == ["/v1/videos"]
+    assert again.data == b"second-mp4"
+
+
+def test_videos_multipart_rejection_retries_json_then_text():
+    kinds = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            if request.url.path.endswith("/content"):
+                return httpx.Response(200, content=b"text-mp4")
+            return httpx.Response(200, json={"status": "completed", "progress": 100})
+        ctype = request.headers.get("content-type", "")
+        if ctype.startswith("multipart/"):
+            kinds.append("multipart")
+            return httpx.Response(400, json={"error": {"message": "multipart rejected"}})
+        body = json.loads(request.content)
+        assert body["seconds"] == "6"
+        assert body["size"] == "720x1280"
+        assert isinstance(body["seconds"], str)
+        if "image" in body:
+            kinds.append("json-image")
+            return httpx.Response(400, json={"error": {"message": "image rejected"}})
+        kinds.append("text")
+        assert "image" not in body
+        return httpx.Response(200, json={"id": "task_text", "status": "queued"})
+
+    # Dead routes first, then /videos.
+    def routed(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path != "/v1/videos":
+            return httpx.Response(503, json=_NO_CHANNEL)
+        return handler(request)
+
+    result = _run(_adapter(routed))
+    assert kinds == ["multipart", "json-image", "text"]
+    assert "纯文字" in result.extra["notice"]
+    assert result.data == b"text-mp4"
+
+
+def test_json_image_is_enough_when_multipart_is_rejected():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path != "/v1/videos":
+            return httpx.Response(404, text="Invalid URL")
+        if request.method == "POST":
+            ctype = request.headers.get("content-type", "")
+            if ctype.startswith("multipart/"):
+                return httpx.Response(415, text="use json")
+            body = json.loads(request.content)
+            assert body["image"].startswith("data:image/png;base64,")
+            assert body["seconds"] == "5"
+            return httpx.Response(200, json={"id": "task_json"})
+        if request.url.path == "/v1/videos/task_json":
+            return httpx.Response(200, json={"status": "completed", "progress": 100})
+        if request.url.path.endswith("/content"):
+            return httpx.Response(200, content=b"json-mp4")
+        return httpx.Response(404, text="no")
+
+    result = _run(_adapter(handler), model="kling-v2-6", duration=5, width=720, height=1280)
+    assert result.data == b"json-mp4"
+    assert "纯文字" not in (result.extra.get("notice") or "")
+
+
+def test_no_channel_does_not_cool_the_key_and_shows_the_relay_message():
+    key = "sk-relay-nocool"
+
+    def attempt(_key):
+        raise ProviderResponseError(
+            '503 {"error":{"code":"model_not_found","message":"分组 video_generation 下模型 MiniMax-H3 无可用渠道（distributor）"}}'
+        )
+
+    with pytest.raises(ProviderResponseError, match="无可用渠道"):
+        call_with_keys("slot-no-channel", [key], attempt)
+    assert cooling(key) is False
+
+    cooled = "sk-relay-429"
+
+    def limited(_key):
+        raise ProviderResponseError("429 rate limit")
+
+    with pytest.raises(ProviderResponseError, match="429"):
+        call_with_keys("slot-429", [cooled], limited)
+    assert cooling(cooled) is True
 
 
 def test_missing_video_key_still_names_the_problem():

@@ -13,6 +13,7 @@ export interface ShotCard {
   thumbnail_url: string | null;
   preview_url: string | null;
   reference_count: number;
+  notice?: string;
 }
 
 export interface EpisodeCard {

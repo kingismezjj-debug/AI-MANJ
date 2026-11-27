@@ -932,6 +932,7 @@ def run_video(db: Session, job: Job, project: Project) -> dict:
             "reference_count": len(refs),
             "duration_sec": result.duration_sec,
             "dialogue_timing": shot.dialogue_timing,
+            "notice": (result.extra or {}).get("notice") or "",
         },
     )
     mark_shot(shot, VIDEO, "succeeded")

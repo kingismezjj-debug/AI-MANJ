@@ -70,7 +70,8 @@ def build_board(db, project: Project, *, offset: int = 0, limit: int = 80) -> di
             else:
                 stage_jobs[stage] = (shot.stage_status or {}).get(stage, "blocked")
         keyframe = latest.get((shot.id, "keyframe"))
-        preview = latest.get((shot.id, "lipsync")) or latest.get((shot.id, "animatic")) or latest.get((shot.id, "video"))
+        video = latest.get((shot.id, "video"))
+        preview = latest.get((shot.id, "lipsync")) or latest.get((shot.id, "animatic")) or video
         scene = scene_by_id.get(shot.scene_id)
         return {
             "id": shot.id,
@@ -86,6 +87,7 @@ def build_board(db, project: Project, *, offset: int = 0, limit: int = 80) -> di
             "thumbnail_url": _url(keyframe),
             "preview_url": _url(preview),
             "reference_count": (keyframe.meta or {}).get("reference_count") if keyframe else 0,
+            "notice": ((video.meta or {}).get("notice") if video else "") or "",
         }
 
     episode_payloads = []

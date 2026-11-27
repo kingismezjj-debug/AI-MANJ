@@ -1,12 +1,16 @@
 """OpenAI-compatible video for a new-api style relay.
 
-Create prefers POST {base}/video/generations and polls
-GET {base}/video/generations/{task_id}. A 404 falls back to the older plural
-path, then to OpenAI's POST /videos and GET /videos/{id}. The keyframe is sent
-as `image`. A failed call raises; it does not invent a clip.
+new-api's POST /video/generations often answers 503 model_not_found when the
+group has no channel. OpenAI's POST /videos is the path that works on those
+relays: multipart input_reference, then poll GET /videos/{id}, then download
+GET /videos/{id}/content when the task completes without a url.
+
+A base URL that has already succeeded remembers that create path so the next
+shot does not pay for the dead route again.
 """
 
 import base64
+import threading
 import time
 
 import httpx
@@ -24,6 +28,16 @@ _ROUTES = (
 )
 _SUCCESS = {"succeeded", "completed", "success", "succeed", "complete"}
 _FAILURE = {"failure", "failed", "fail", "error", "cancelled", "canceled", "expired"}
+_PENDING = {"queued", "in_progress", "processing", "pending", "running", "submitted"}
+_NO_CHANNEL = ("model_not_found", "无可用渠道", "no available channel", "no channel", "no_channel", "distributor")
+
+_route_lock = threading.Lock()
+_preferred_create: dict[str, str] = {}
+
+
+class _NextRoute(Exception):
+    def __init__(self, reason: BaseException):
+        self.reason = reason
 
 
 class OpenAICompatibleVideo:
@@ -34,7 +48,7 @@ class OpenAICompatibleVideo:
         self.api_key = settings.openai_api_key
         self.base_url = settings.openai_base_url.rstrip("/")
         self.default_model = "seedance"
-        self.client = client or httpx.Client(timeout=120)
+        self.client = client or httpx.Client(timeout=180)
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
 
@@ -71,43 +85,45 @@ class OpenAICompatibleVideo:
             model=chosen,
         )
         duration = int(clamped["duration_sec"])
-        body: dict = {
-            "model": chosen,
-            "prompt": (prompt or "")[:1000],
-            "duration": duration,
-            "size": f"{int(width)}x{int(height)}",
-            "width": int(width),
-            "height": int(height),
-        }
-        image_ref = _image_ref(image)
-        if image_ref:
-            body["image"] = image_ref
-        extras = [item for item in (_image_ref(ref) for ref in (clamped["references"] or [])) if item]
-        if extras:
-            body["images"] = extras
-        metadata: dict = {}
-        if is_minimax(chosen):
-            resolution = hailuo_resolution(width, height)
-            body["resolution"] = resolution
-            metadata["resolution"] = resolution
-        if seed is not None:
-            metadata["seed"] = int(seed)
-        if metadata:
-            body["metadata"] = metadata
-        created, poll_path = self._create(body)
-        video_url = _video_url(created)
+        size = openai_video_size(width, height)
+        image_bytes = image if isinstance(image, (bytes, bytearray)) and image else None
+        new_api_body = _new_api_body(
+            model=chosen,
+            prompt=(prompt or "")[:1000],
+            duration=duration,
+            size=size,
+            width=int(width),
+            height=int(height),
+            image=image,
+            references=clamped["references"],
+            seed=seed,
+            minimax=is_minimax(chosen),
+        )
+        created, poll_path, image_notice = self._create(
+            new_api_body,
+            model=chosen,
+            prompt=(prompt or "")[:1000],
+            seconds=str(duration),
+            size=size,
+            image=bytes(image_bytes) if image_bytes else None,
+        )
+        task_id = _task_id(created) or ""
         status = _status(created)
+        video_url = _video_url(created)
         if not (video_url and status in _SUCCESS):
-            task_id = _task_id(created)
             if not task_id:
                 raise ProviderResponseError(f"视频任务没有返回编号：{str(created)[:300]}。请点重试。")
             finished = self._poll(str(task_id), poll_path)
             video_url = _video_url(finished)
-            if not video_url:
-                raise ProviderResponseError(f"视频完成了但没有地址（{task_id}）。请点重试。")
-        data = download(self.client, video_url)
+            if video_url:
+                data = download(self.client, video_url)
+            else:
+                data = self._download_content(str(task_id), poll_path)
+        else:
+            data = download(self.client, video_url)
         if not data:
             raise ProviderResponseError("视频文件是空的。请点重试。")
+        notices = [part for part in (clamped["notice"], image_notice) if part]
         return MediaResult(
             data=data,
             mime="video/mp4",
@@ -118,30 +134,84 @@ class OpenAICompatibleVideo:
             width=width,
             height=height,
             seed=seed,
-            extra={"task_id": _task_id(created), "notice": clamped["notice"], "reference_count": len(extras)},
+            extra={"task_id": task_id, "notice": "；".join(notices), "reference_count": len(clamped["references"] or [])},
         )
 
-    def _headers(self) -> dict:
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+    def _auth(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"}
 
-    def _create(self, body: dict) -> tuple[dict, str]:
-        last_404: ProviderResponseError | None = None
-        for create_path, poll_path in _ROUTES:
+    def _json_headers(self) -> dict:
+        return {**self._auth(), "Content-Type": "application/json"}
+
+    def _create(self, new_api_body: dict, *, model: str, prompt: str, seconds: str, size: str, image: bytes | None) -> tuple[dict, str, str]:
+        last: BaseException | None = None
+        for create_path, poll_path in ordered_routes(self.base_url):
             try:
-                created = send(
-                    self.client,
-                    "POST",
-                    f"{self.base_url}{create_path}",
-                    headers=self._headers(),
-                    json=body,
-                ).json()
+                if create_path == "/videos":
+                    created, notice = self._create_openai_videos(model=model, prompt=prompt, seconds=seconds, size=size, image=image)
+                else:
+                    created = self._post_json(create_path, new_api_body)
+                    notice = ""
+            except _NextRoute as skipped:
+                last = skipped.reason
+                continue
+            remember_route(self.base_url, create_path)
+            return created, poll_path, notice
+        raise ProviderResponseError(f"视频提交失败：{last}。请点重试。")
+
+    def _create_openai_videos(self, *, model: str, prompt: str, seconds: str, size: str, image: bytes | None) -> tuple[dict, str]:
+        fields = {"model": model, "prompt": prompt, "seconds": seconds, "size": size}
+        if image:
+            try:
+                return self._post_multipart("/videos", fields, image), ""
+            except _NextRoute:
+                raise
             except ProviderResponseError as exc:
-                if str(exc).startswith("404"):
-                    last_404 = exc
-                    continue
-                raise ProviderResponseError(f"视频提交失败：{exc}。请点重试。") from exc
-            return created, poll_path
-        raise ProviderResponseError(f"视频接口不存在：{last_404}。请点重试。")
+                if not _client_error(exc):
+                    raise
+            try:
+                body = {**fields, "image": _image_ref(image)}
+                return self._post_json("/videos", body), ""
+            except _NextRoute:
+                raise
+            except ProviderResponseError as exc:
+                if not _client_error(exc):
+                    raise
+            created = self._post_json("/videos", fields)
+            return created, "首帧未被中转接受，本次改为纯文字生成视频"
+        return self._post_json("/videos", fields), ""
+
+    def _post_json(self, path: str, body: dict) -> dict:
+        try:
+            response = send(
+                self.client,
+                "POST",
+                f"{self.base_url}{path}",
+                headers=self._json_headers(),
+                json=body,
+            )
+        except ProviderResponseError as exc:
+            if _route_unavailable(exc):
+                raise _NextRoute(exc) from exc
+            raise ProviderResponseError(f"{exc}。请点重试。") from exc
+        return response.json()
+
+    def _post_multipart(self, path: str, fields: dict, image: bytes) -> dict:
+        filename, mime = _image_file(image)
+        try:
+            response = send(
+                self.client,
+                "POST",
+                f"{self.base_url}{path}",
+                headers=self._auth(),
+                data=fields,
+                files={"input_reference": (filename, image, mime)},
+            )
+        except ProviderResponseError as exc:
+            if _route_unavailable(exc):
+                raise _NextRoute(exc) from exc
+            raise ProviderResponseError(f"{exc}。请点重试。") from exc
+        return response.json()
 
     def _poll(self, task_id: str, poll_path: str) -> dict:
         paths = [poll_path] + [item for _create, item in _ROUTES if item != poll_path]
@@ -150,28 +220,81 @@ class OpenAICompatibleVideo:
             payload, used = self._poll_once(task_id, paths)
             paths = [used]
             status = _status(payload)
-            if status in _SUCCESS:
+            if status in _SUCCESS or _progress_done(payload):
                 return payload
             if status in _FAILURE:
                 detail = _error_text(payload) or status
                 raise ProviderResponseError(f"视频生成失败：{detail}。请点重试。")
+            if status and status not in _PENDING and status not in _SUCCESS:
+                # Unknown non-terminal states keep waiting until the timeout.
+                pass
             if time.time() > deadline:
-                raise ProviderResponseError(f"视频生成超时（{task_id}）。请点重试。")
+                progress = _progress(payload)
+                extra = f"，进度 {progress}%" if progress is not None else ""
+                raise ProviderResponseError(f"视频生成超时（{task_id}{extra}）。请点重试。")
             time.sleep(self.poll_interval)
 
     def _poll_once(self, task_id: str, paths: list[str]) -> tuple[dict, str]:
-        last_404: ProviderResponseError | None = None
+        last: ProviderResponseError | None = None
         for path in paths:
             url = f"{self.base_url}{path.format(task_id=task_id)}"
             try:
-                payload = send(self.client, "GET", url, idempotent=True, headers=self._headers()).json()
+                payload = send(self.client, "GET", url, idempotent=True, headers=self._auth()).json()
             except ProviderResponseError as exc:
-                if str(exc).startswith("404"):
-                    last_404 = exc
+                if _route_unavailable(exc):
+                    last = exc
                     continue
                 raise ProviderResponseError(f"视频查询失败：{exc}。请点重试。") from exc
             return payload, path
-        raise ProviderResponseError(f"视频查询路径不存在：{last_404}。请点重试。")
+        raise ProviderResponseError(f"视频查询路径不存在：{last}。请点重试。")
+
+    def _download_content(self, task_id: str, poll_path: str) -> bytes:
+        url = f"{self.base_url}{poll_path.format(task_id=task_id)}/content"
+        try:
+            response = send(self.client, "GET", url, idempotent=True, headers=self._auth(), timeout=180)
+        except ProviderResponseError as exc:
+            raise ProviderResponseError(f"视频完成了但下载失败：{exc}。请点重试。") from exc
+        return response.content
+
+
+def clear_route_cache() -> None:
+    with _route_lock:
+        _preferred_create.clear()
+
+
+def remember_route(base_url: str, create_path: str) -> None:
+    with _route_lock:
+        _preferred_create[base_url.rstrip("/")] = create_path
+
+
+def ordered_routes(base_url: str) -> list[tuple[str, str]]:
+    with _route_lock:
+        preferred = _preferred_create.get(base_url.rstrip("/"))
+    routes = list(_ROUTES)
+    if preferred:
+        routes.sort(key=lambda item: 0 if item[0] == preferred else 1)
+    return routes
+
+
+def openai_video_size(width: int, height: int) -> str:
+    """Portrait shots use the relay's vertical default. Landscape uses 1280x720."""
+    if int(height or 0) >= int(width or 0):
+        return "720x1280"
+    return "1280x720"
+
+
+def _route_unavailable(exc: BaseException) -> bool:
+    text = str(exc)
+    lowered = text.lower()
+    code = lowered.split(" ", 1)[0]
+    if code == "404":
+        return True
+    return any(token in text or token in lowered for token in _NO_CHANNEL)
+
+
+def _client_error(exc: BaseException) -> bool:
+    code = str(exc).split(" ", 1)[0]
+    return code.isdigit() and code.startswith("4") and code != "404" and code != "429"
 
 
 def _image_ref(value) -> str | None:
@@ -181,6 +304,41 @@ def _image_ref(value) -> str | None:
         return value
     encoded = base64.b64encode(value).decode("ascii")
     return "data:image/png;base64," + encoded
+
+
+def _image_file(data: bytes) -> tuple[str, str]:
+    if data[:3] == b"\xff\xd8\xff":
+        return "keyframe.jpg", "image/jpeg"
+    return "keyframe.png", "image/png"
+
+
+def _new_api_body(*, model, prompt, duration, size, width, height, image, references, seed, minimax: bool) -> dict:
+    body: dict = {
+        "model": model,
+        "prompt": prompt,
+        "duration": duration,
+        "size": size,
+        "width": width,
+        "height": height,
+    }
+    image_ref = _image_ref(image)
+    if image_ref:
+        body["image"] = image_ref
+    extras = [item for item in (_image_ref(ref) for ref in (references or [])) if item]
+    if extras:
+        body["images"] = extras
+    metadata: dict = {}
+    if minimax:
+        from app.adapters.capabilities import hailuo_resolution
+
+        resolution = hailuo_resolution(width, height)
+        body["resolution"] = resolution
+        metadata["resolution"] = resolution
+    if seed is not None:
+        metadata["seed"] = int(seed)
+    if metadata:
+        body["metadata"] = metadata
+    return body
 
 
 def _task_id(payload: dict) -> str | None:
@@ -200,6 +358,24 @@ def _status(payload: dict) -> str:
         if value:
             return str(value).lower()
     return ""
+
+
+def _progress(payload: dict) -> int | None:
+    for source in _objects(payload):
+        value = source.get("progress")
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _progress_done(payload: dict) -> bool:
+    progress = _progress(payload)
+    status = _status(payload)
+    return progress is not None and progress >= 100 and status not in _FAILURE and status not in _PENDING
 
 
 def _video_url(payload: dict) -> str | None:

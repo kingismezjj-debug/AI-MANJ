@@ -30,8 +30,21 @@ def mark_cooldown(key: str, seconds: float = 60) -> None:
 
 
 def retryable_status(exc: BaseException) -> bool:
+    """Cooldown only for rate limits and transient gateway errors.
+
+    A 503 model_not_found / 无可用渠道 is a routing miss, not a sick key.
+    A 4xx configuration error is the same: the next shot should show it.
+    """
     text = str(exc)
-    return any(token in text for token in ("429", "500", "502", "503", "504"))
+    lowered = text.lower()
+    if any(
+        token in text or token in lowered
+        for token in ("model_not_found", "无可用渠道", "no available channel", "no channel", "no_channel")
+    ):
+        return False
+    if "429" in text or "rate limit" in lowered or "rate_limit" in lowered:
+        return True
+    return any(token in text for token in ("500", "502", "503", "504"))
 
 
 def ordered_keys(slot_id: str, keys: list[str], now: float | None = None) -> list[str]:

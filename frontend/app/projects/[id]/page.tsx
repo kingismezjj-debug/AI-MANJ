@@ -213,6 +213,7 @@ export default function BoardPage() {
                 <div className="body">
                   <div className="who">{shot.speaker || shot.camera} · {shot.duration_sec.toFixed(1)}s</div>
                   <div className="line">{shot.dialogue || shot.description}</div>
+                  {shot.notice ? <p className="meta">{shot.notice}</p> : null}
                   <div className="pips">
                     {SHOT_STAGES.map((stage) => {
                       const status = shot.stages[stage.key] || "blocked";
