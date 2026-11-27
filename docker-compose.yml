@@ -1,0 +1,145 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zhenchuan
+      POSTGRES_PASSWORD: zhenchuan
+      POSTGRES_DB: zhenchuan
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zhenchuan -d zhenchuan"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    # Official minio/minio and quay.io/minio/minio images are no longer
+    # anonymously pullable. Silo is a drop-in S3-compatible server with the
+    # same process flags and the MINIO_ROOT_* environment variables.
+    image: pgsty/silo:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg://zhenchuan:zhenchuan@postgres:5432/zhenchuan
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-}
+      S3_BUCKET: zhenchuan
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio12345
+      S3_REGION: us-east-1
+      INLINE_JOBS: "0"
+      SAMPLE_NOVEL_PATH: /samples/short_novel.txt
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-dall-e-3}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      ARK_BASE_URL: ${ARK_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDREAM_MODEL: ${SEEDREAM_MODEL:-doubao-seedream-4-5-251128}
+      SEEDANCE_MODEL: ${SEEDANCE_MODEL:-doubao-seedance-2-0-260128}
+      KLING_API_KEY: ${KLING_API_KEY:-}
+      KLING_ACCESS_KEY: ${KLING_ACCESS_KEY:-}
+      KLING_SECRET_KEY: ${KLING_SECRET_KEY:-}
+      KLING_BASE_URL: ${KLING_BASE_URL:-https://api-singapore.klingai.com}
+      KLING_VIDEO_MODEL: ${KLING_VIDEO_MODEL:-kling-v2-6}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimaxi.com}
+      MINIMAX_MODEL: ${MINIMAX_MODEL:-speech-2.6-hd}
+      MINIMAX_VOICE_ID: ${MINIMAX_VOICE_ID:-male-qn-qingse}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_BASE_URL: ${ELEVENLABS_BASE_URL:-https://api.elevenlabs.io}
+      ELEVENLABS_MODEL: ${ELEVENLABS_MODEL:-eleven_multilingual_v2}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-21m00Tcm4TlvDq8ikWAM}
+      VIDEO_HTTP_API_KEY: ${VIDEO_HTTP_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-zc-dev-admin}
+      DEV_USER_API_KEY: ${DEV_USER_API_KEY:-zc-dev-user}
+      DEV_USER_CREDITS: ${DEV_USER_CREDITS:-100}
+      CREDIT_MARKUP: ${CREDIT_MARKUP:-1.2}
+      PUBLIC_ASSET_BASE_URL: ${PUBLIC_ASSET_BASE_URL:-}
+      FRAME_PUBLISH_DIR: /data/frames
+      CLOUDFLARED_METRICS_URL: http://cloudflared:2000/quicktunnel
+    ports:
+      - "8000:8000"
+    volumes:
+      - framepub:/data/frames
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+    environment: *backend_env
+    volumes:
+      - framepub:/data/frames
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  frames:
+    build:
+      context: ./backend/framepub
+    volumes:
+      - framepub:/data
+    # No host port. Only cloudflared reaches this process.
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 --url http://frames:8080
+    depends_on:
+      - frames
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  minio:
+  framepub:
